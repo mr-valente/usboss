@@ -43,12 +43,15 @@ RUN set +o pipefail \
     && yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null \
     && set -o pipefail \
     && sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" \
+        "build-tools;34.0.0" \
         "build-tools;35.0.0" \
         "platform-tools" \
+        "platforms;android-34" \
         "platforms;android-35"
 
 RUN if ! getent group "${GROUP_ID}" >/dev/null; then groupadd --gid "${GROUP_ID}" builder; fi \
-    && useradd --uid "${USER_ID}" --gid "${GROUP_ID}" --create-home --shell /bin/bash builder
+    && useradd --uid "${USER_ID}" --gid "${GROUP_ID}" --create-home --shell /bin/bash builder \
+    && chown -R "${USER_ID}:${GROUP_ID}" "${ANDROID_SDK_ROOT}"
 
 COPY docker/build-inside-container.sh /usr/local/bin/build-usboss
 
