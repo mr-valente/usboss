@@ -27,13 +27,22 @@ docker build \
     --file "${ROOT_DIR}/docker/Dockerfile" \
     "${ROOT_DIR}"
 
-docker run --rm \
-    --volume "${ROOT_DIR}:/workspace" \
-    --volume "${ARTIFACT_ROOT}:/artifacts" \
-    --volume "${CACHE_ROOT}/gradle:/home/builder/.gradle" \
-    --volume "${CACHE_ROOT}/cargo/registry:/home/builder/.cargo/registry" \
-    --volume "${CACHE_ROOT}/cargo/git:/home/builder/.cargo/git" \
-    --env "ANDROID_GRADLE_TASK=${ANDROID_GRADLE_TASK:-:app:assembleDebug}" \
-    --env "CARGO_BUILD_TARGET=${CARGO_BUILD_TARGET:-}" \
-    "${IMAGE_TAG}" \
-    "$@"
+docker_args=(
+    run
+    --rm
+    --volume "${ROOT_DIR}:/workspace"
+    --volume "${ARTIFACT_ROOT}:/artifacts"
+    --volume "${CACHE_ROOT}/gradle:/home/builder/.gradle"
+    --volume "${CACHE_ROOT}/cargo/registry:/home/builder/.cargo/registry"
+    --volume "${CACHE_ROOT}/cargo/git:/home/builder/.cargo/git"
+    --env "ANDROID_GRADLE_TASK=${ANDROID_GRADLE_TASK:-:app:assembleDebug}"
+)
+
+if [[ -n "${CARGO_BUILD_TARGET:-}" ]]; then
+    docker_args+=(--env "CARGO_BUILD_TARGET=${CARGO_BUILD_TARGET}")
+fi
+
+docker_args+=("${IMAGE_TAG}")
+docker_args+=("$@")
+
+docker "${docker_args[@]}"
