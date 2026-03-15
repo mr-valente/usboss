@@ -10,6 +10,7 @@ object UsbHidDescriptorParser {
     private const val DESCRIPTOR_TYPE_HID = 0x21
     private const val DESCRIPTOR_TYPE_REPORT = 0x22
     private const val REQUEST_GET_DESCRIPTOR = 0x06
+    private const val USB_RECIP_INTERFACE = 0x01
 
     fun findReportDescriptorLength(rawDescriptors: ByteArray, interfaceNumber: Int): Int? {
         var offset = 0
@@ -53,7 +54,7 @@ object UsbHidDescriptorParser {
         val buffer = ByteArray(expectedLength)
         val requestType = UsbConstants.USB_DIR_IN or
             UsbConstants.USB_TYPE_STANDARD or
-            UsbConstants.USB_RECIP_INTERFACE
+            USB_RECIP_INTERFACE
         val value = (DESCRIPTOR_TYPE_REPORT shl 8)
         val result = connection.controlTransfer(
             requestType,

@@ -41,7 +41,7 @@ object HostRuntime {
                     state.copy(connectedClient = client)
                 }
             },
-            devicesProvider = { state.value.devices.map(HidCandidate::toSummary) },
+            devicesProvider = { state.value.devices.map { it.toSummary() } },
             openDevice = { id ->
                 val candidate = candidatesById[id]
                     ?: throw IllegalArgumentException("Unknown HID candidate id $id")

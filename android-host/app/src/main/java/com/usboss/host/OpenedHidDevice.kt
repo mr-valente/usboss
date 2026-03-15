@@ -14,6 +14,8 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
+private const val USB_RECIP_INTERFACE = 0x01
+
 class OpenedHidDevice(
     private val candidate: HidCandidate,
     private val connection: UsbDeviceConnection,
@@ -109,7 +111,7 @@ class OpenedHidDevice(
         }
         val buffer = ByteArray(4_096)
         val result = connection.controlTransfer(
-            UsbConstants.USB_DIR_IN or UsbConstants.USB_TYPE_CLASS or UsbConstants.USB_RECIP_INTERFACE,
+            UsbConstants.USB_DIR_IN or UsbConstants.USB_TYPE_CLASS or USB_RECIP_INTERFACE,
             0x01,
             ((usbReportType(reportType) and 0xff) shl 8) or (reportId and 0xff),
             usbInterface.id,
@@ -129,7 +131,7 @@ class OpenedHidDevice(
         }
 
         val result = connection.controlTransfer(
-            UsbConstants.USB_DIR_OUT or UsbConstants.USB_TYPE_CLASS or UsbConstants.USB_RECIP_INTERFACE,
+            UsbConstants.USB_DIR_OUT or UsbConstants.USB_TYPE_CLASS or USB_RECIP_INTERFACE,
             0x09,
             ((usbReportType(reportType) and 0xff) shl 8) or (reportId and 0xff),
             usbInterface.id,
