@@ -1,6 +1,5 @@
 package com.usboss.host
 
-import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
@@ -14,27 +13,26 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
-private const val USB_RECIP_INTERFACE = 0x01
-
-class OpenedHidDevice(
+class OpenedXInputDevice(
     private val candidate: UsbCandidate,
     private val connection: UsbDeviceConnection,
     private val usbInterface: UsbInterface,
     private val inputEndpoint: UsbEndpoint,
     private val outputEndpoint: UsbEndpoint?,
-    private val reportDescriptor: ByteArray,
     private val versionBcd: Int,
 ) : OpenedUsbDevice {
     private val closed = AtomicBoolean(false)
+
     override val displayName: String
         get() = candidate.displayName
+
     override val systemPath: String
         get() = candidate.systemPath
 
     override fun protocolSpec(): Protocol.OpenDeviceSpec {
         val serial = candidate.serial.ifBlank { "" }
         return Protocol.OpenDeviceSpec(
-            transport = Protocol.TRANSPORT_HID,
+            transport = Protocol.TRANSPORT_XINPUT_360,
             vendorId = candidate.vendorId,
             productId = candidate.productId,
             versionBcd = versionBcd,
@@ -47,7 +45,7 @@ class OpenedHidDevice(
             name = "USBoss ${candidate.displayName}",
             phys = "android:${candidate.systemPath}",
             uniq = serial,
-            reportDescriptor = reportDescriptor,
+            reportDescriptor = ByteArray(0),
         )
     }
 
@@ -58,18 +56,18 @@ class OpenedHidDevice(
     ): Job = scope.launch(Dispatchers.IO) {
         val request = UsbRequest()
         if (!request.initialize(connection, inputEndpoint)) {
-            onError(IOException("Failed to initialize interrupt reader"))
+            onError(IOException("Failed to initialize XInput interrupt reader"))
             return@launch
         }
 
-        val packetSize = inputEndpoint.maxPacketSize.coerceAtLeast(8)
+        val packetSize = inputEndpoint.maxPacketSize.coerceAtLeast(32)
         val buffer = ByteBuffer.allocateDirect(packetSize)
 
         try {
             while (isActive && !closed.get()) {
                 buffer.clear()
                 if (!request.queue(buffer)) {
-                    throw IOException("Failed to queue USB interrupt read")
+                    throw IOException("Failed to queue XInput interrupt read")
                 }
 
                 val completed = connection.requestWait(1_000) ?: continue
@@ -99,52 +97,20 @@ class OpenedHidDevice(
         if (closed.get()) {
             return 5
         }
-
-        if (outputEndpoint != null && data.isNotEmpty()) {
-            val written = connection.bulkTransfer(outputEndpoint, data, data.size, 50)
-            if (written >= 0) {
-                return 0
-            }
+        val endpoint = outputEndpoint ?: return 95
+        if (data.isEmpty()) {
+            return 0
         }
-
-        return setReport(reportType, reportId, data)
+        val written = connection.bulkTransfer(endpoint, data, data.size, 100)
+        return if (written >= 0) 0 else 5
     }
 
     override fun getReport(reportType: Int, reportId: Int): ByteArray {
-        if (closed.get()) {
-            throw IOException("USB device is closed")
-        }
-        val buffer = ByteArray(4_096)
-        val result = connection.controlTransfer(
-            UsbConstants.USB_DIR_IN or UsbConstants.USB_TYPE_CLASS or USB_RECIP_INTERFACE,
-            0x01,
-            ((usbReportType(reportType) and 0xff) shl 8) or (reportId and 0xff),
-            usbInterface.id,
-            buffer,
-            buffer.size,
-            1_000,
-        )
-        if (result < 0) {
-            throw IOException("GET_REPORT failed for interface ${usbInterface.id}")
-        }
-        return buffer.copyOf(result)
+        throw IOException("XInput GET_REPORT is not supported")
     }
 
     override fun setReport(reportType: Int, reportId: Int, data: ByteArray): Int {
-        if (closed.get()) {
-            return 5
-        }
-
-        val result = connection.controlTransfer(
-            UsbConstants.USB_DIR_OUT or UsbConstants.USB_TYPE_CLASS or USB_RECIP_INTERFACE,
-            0x09,
-            ((usbReportType(reportType) and 0xff) shl 8) or (reportId and 0xff),
-            usbInterface.id,
-            data,
-            data.size,
-            1_000,
-        )
-        return if (result >= 0) 0 else 5
+        return 95
     }
 
     override fun close() {
@@ -157,12 +123,5 @@ class OpenedHidDevice(
         runCatching {
             connection.close()
         }
-    }
-
-    private fun usbReportType(reportType: Int): Int = when (reportType) {
-        Protocol.REPORT_TYPE_INPUT -> 1
-        Protocol.REPORT_TYPE_OUTPUT -> 2
-        Protocol.REPORT_TYPE_FEATURE -> 3
-        else -> 3
     }
 }

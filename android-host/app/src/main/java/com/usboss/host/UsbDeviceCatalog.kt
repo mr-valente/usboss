@@ -11,16 +11,30 @@ import android.hardware.usb.UsbManager
 import java.io.IOException
 
 object UsbDeviceCatalog {
-    fun enumerate(context: Context): List<HidCandidate> {
+    private const val USB_CLASS_VENDOR_SPEC = 0xff
+    private const val XINPUT_CLASS = 0xff
+    private const val XINPUT_SUBCLASS = 0x5d
+    private const val XINPUT_PROTOCOL = 0x01
+    private const val XUSB_CLASS = 0x58
+    private const val XUSB_SUBCLASS = 0x42
+    private const val XUSB_PROTOCOL = 0x00
+    private const val VENDOR_8BITDO = 0x2dc8
+
+    fun enumerate(context: Context): List<UsbCandidate> {
         val usbManager = context.getSystemService(UsbManager::class.java)
-        val devices = mutableListOf<HidCandidate>()
+        val devices = mutableListOf<UsbCandidate>()
         usbManager.deviceList.values.forEachIndexed { deviceIndex, device ->
             devices += buildCandidatesForDevice(usbManager, device, deviceIndex)
         }
-        return devices
+        return devices.sortedWith(
+            compareByDescending<UsbCandidate> {
+                if (it.transport == Protocol.TRANSPORT_XINPUT_360) 1 else 0
+            }
+                .thenBy { it.id },
+        )
     }
 
-    fun requestPermissions(context: Context, devices: List<HidCandidate>, action: String) {
+    fun requestPermissions(context: Context, devices: List<UsbCandidate>, action: String) {
         val usbManager = context.getSystemService(UsbManager::class.java)
         val permissionIntent = PendingIntent.getBroadcast(
             context,
@@ -37,7 +51,7 @@ object UsbDeviceCatalog {
             }
     }
 
-    fun open(context: Context, candidate: HidCandidate): OpenedHidDevice {
+    fun open(context: Context, candidate: UsbCandidate): OpenedUsbDevice {
         val usbManager = context.getSystemService(UsbManager::class.java)
         val device = usbManager.deviceList[candidate.deviceName]
             ?: throw IOException("USB device ${candidate.deviceName} is no longer attached")
@@ -54,7 +68,7 @@ object UsbDeviceCatalog {
             ?: throw IOException("Failed to open ${candidate.displayName}")
         if (!connection.claimInterface(usbInterface, true)) {
             connection.close()
-            throw IOException("Failed to claim HID interface ${candidate.interfaceNumber}")
+            throw IOException("Failed to claim controller interface ${candidate.interfaceNumber}")
         }
 
         val inputEndpoint = usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_IN)
@@ -65,19 +79,35 @@ object UsbDeviceCatalog {
             }
         return try {
             val outputEndpoint = usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_OUT)
-            val descriptor = UsbHidDescriptorParser.fetchReportDescriptor(connection, usbInterface)
+            when (candidate.transport) {
+                Protocol.TRANSPORT_XINPUT_360 -> {
+                    OpenedXInputDevice(
+                        candidate = candidate,
+                        connection = connection,
+                        usbInterface = usbInterface,
+                        inputEndpoint = inputEndpoint,
+                        outputEndpoint = outputEndpoint,
+                        versionBcd = UsbHidDescriptorParser.parseBcdVersion(
+                            runCatching { device.version }.getOrNull(),
+                        ),
+                    )
+                }
 
-            OpenedHidDevice(
-                candidate = candidate,
-                connection = connection,
-                usbInterface = usbInterface,
-                inputEndpoint = inputEndpoint,
-                outputEndpoint = outputEndpoint,
-                reportDescriptor = descriptor,
-                versionBcd = UsbHidDescriptorParser.parseBcdVersion(
-                    runCatching { device.version }.getOrNull(),
-                ),
-            )
+                else -> {
+                    val descriptor = UsbHidDescriptorParser.fetchReportDescriptor(connection, usbInterface)
+                    OpenedHidDevice(
+                        candidate = candidate,
+                        connection = connection,
+                        usbInterface = usbInterface,
+                        inputEndpoint = inputEndpoint,
+                        outputEndpoint = outputEndpoint,
+                        reportDescriptor = descriptor,
+                        versionBcd = UsbHidDescriptorParser.parseBcdVersion(
+                            runCatching { device.version }.getOrNull(),
+                        ),
+                    )
+                }
+            }
         } catch (error: Throwable) {
             connection.releaseInterface(usbInterface)
             connection.close()
@@ -89,19 +119,21 @@ object UsbDeviceCatalog {
         usbManager: UsbManager,
         device: UsbDevice,
         deviceIndex: Int,
-    ): List<HidCandidate> {
+    ): List<UsbCandidate> {
         return (0 until device.interfaceCount)
             .map(device::getInterface)
             .filter { usbInterface ->
-                usbInterface.interfaceClass == UsbConstants.USB_CLASS_HID &&
-                    usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_IN) != null
+                usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_IN) != null &&
+                    classifyTransport(device, usbInterface) != null
             }
             .mapIndexed { interfaceOffset, usbInterface ->
+                val transport = checkNotNull(classifyTransport(device, usbInterface))
                 val input = usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_IN)
                 val output = usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_OUT)
-                HidCandidate(
+                UsbCandidate(
                     id = (deviceIndex * 10) + interfaceOffset + 1,
                     deviceName = device.deviceName,
+                    transport = transport,
                     vendorId = device.vendorId,
                     productId = device.productId,
                     interfaceNumber = usbInterface.id,
@@ -117,6 +149,31 @@ object UsbDeviceCatalog {
                     hasPermission = usbManager.hasPermission(device),
                 )
             }
+    }
+
+    private fun classifyTransport(device: UsbDevice, usbInterface: UsbInterface): Int? {
+        if (usbInterface.interfaceClass == UsbConstants.USB_CLASS_HID) {
+            return Protocol.TRANSPORT_HID
+        }
+
+        val isKnownXInputSignature =
+            (usbInterface.interfaceClass == XINPUT_CLASS &&
+                usbInterface.interfaceSubclass == XINPUT_SUBCLASS &&
+                usbInterface.interfaceProtocol == XINPUT_PROTOCOL) ||
+                (usbInterface.interfaceClass == XUSB_CLASS &&
+                    usbInterface.interfaceSubclass == XUSB_SUBCLASS &&
+                    usbInterface.interfaceProtocol == XUSB_PROTOCOL)
+
+        val isLikely8BitDoXInput =
+            device.vendorId == VENDOR_8BITDO &&
+                usbInterface.interfaceClass == USB_CLASS_VENDOR_SPEC &&
+                usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_OUT) != null
+
+        return if (isKnownXInputSignature || isLikely8BitDoXInput) {
+            Protocol.TRANSPORT_XINPUT_360
+        } else {
+            null
+        }
     }
 
     private fun UsbInterface.findInterruptEndpoint(direction: Int): UsbEndpoint? {

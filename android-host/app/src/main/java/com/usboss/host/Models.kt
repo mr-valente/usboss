@@ -7,13 +7,14 @@ data class HostUiState(
     val tcpPort: Int = Protocol.DEFAULT_TCP_PORT,
     val discoveryPort: Int = Protocol.DEFAULT_DISCOVERY_PORT,
     val connectedClient: String? = null,
-    val devices: List<HidCandidate> = emptyList(),
+    val devices: List<UsbCandidate> = emptyList(),
     val lastError: String? = null,
 )
 
-data class HidCandidate(
+data class UsbCandidate(
     val id: Int,
     val deviceName: String,
+    val transport: Int,
     val vendorId: Int,
     val productId: Int,
     val interfaceNumber: Int,
@@ -32,8 +33,19 @@ data class HidCandidate(
         get() = listOf(manufacturer, product)
             .filter { it.isNotBlank() }
             .joinToString(" ")
-            .ifBlank { "USB HID ${vendorId.toString(16)}:${productId.toString(16)}" }
+            .ifBlank {
+                when (transport) {
+                    Protocol.TRANSPORT_XINPUT_360 -> "USB XInput ${vendorId.toString(16)}:${productId.toString(16)}"
+                    else -> "USB HID ${vendorId.toString(16)}:${productId.toString(16)}"
+                }
+            }
 
     val systemPath: String
         get() = "$deviceName#if$interfaceNumber"
+
+    val transportLabel: String
+        get() = when (transport) {
+            Protocol.TRANSPORT_XINPUT_360 -> "XInput 360"
+            else -> "HID"
+        }
 }

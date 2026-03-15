@@ -1,1 +1,2 @@
 KERNEL=="uhid", MODE="0660", GROUP="input"
+KERNEL=="uinput", MODE="0660", GROUP="input"

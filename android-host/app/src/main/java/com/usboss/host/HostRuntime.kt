@@ -22,7 +22,7 @@ object HostRuntime {
     private var server: UsbBridgeServer? = null
 
     @Volatile
-    private var candidatesById: Map<Int, HidCandidate> = emptyMap()
+    private var candidatesById: Map<Int, UsbCandidate> = emptyMap()
 
     fun start(context: Context) {
         updateError(null)
@@ -46,7 +46,7 @@ object HostRuntime {
             devicesProvider = { state.value.devices.map { it.toSummary() } },
             openDevice = { id ->
                 val candidate = candidatesById[id]
-                    ?: throw IllegalArgumentException("Unknown HID candidate id $id")
+                    ?: throw IllegalArgumentException("Unknown USB candidate id $id")
                 UsbDeviceCatalog.open(applicationContext, candidate)
             },
         ).also { it.start() }
@@ -76,7 +76,7 @@ object HostRuntime {
         runCatching {
             val devices = UsbDeviceCatalog.enumerate(context)
             candidatesById = devices.associateBy { it.id }
-            server?.onAvailableDevicesChanged(devices.map(HidCandidate::systemPath).toSet())
+            server?.onAvailableDevicesChanged(devices.map(UsbCandidate::systemPath).toSet())
             mutableState.update {
                 it.copy(
                     devices = devices,
@@ -109,9 +109,9 @@ object HostRuntime {
         mutableState.update { it.copy(lastError = message) }
     }
 
-    private fun listeningStatus(devices: List<HidCandidate>): String {
+    private fun listeningStatus(devices: List<UsbCandidate>): String {
         return if (devices.isEmpty()) {
-            "Listening for Linux clients (no USB HID devices yet)"
+            "Listening for Linux clients (no supported USB devices yet)"
         } else {
             "Listening for Linux clients"
         }
@@ -132,9 +132,10 @@ object HostRuntime {
             ?.hostAddress
     }
 
-    private fun HidCandidate.toSummary(): Protocol.DeviceSummary {
+    private fun UsbCandidate.toSummary(): Protocol.DeviceSummary {
         return Protocol.DeviceSummary(
             deviceId = id,
+            transport = transport,
             vendorId = vendorId,
             productId = productId,
             interfaceNumber = interfaceNumber,

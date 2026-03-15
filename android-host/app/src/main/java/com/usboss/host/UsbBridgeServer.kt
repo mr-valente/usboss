@@ -25,7 +25,7 @@ class UsbBridgeServer(
     private val onError: (String?) -> Unit,
     private val onClientChanged: (String?) -> Unit,
     private val devicesProvider: () -> List<Protocol.DeviceSummary>,
-    private val openDevice: (Int) -> OpenedHidDevice,
+    private val openDevice: (Int) -> OpenedUsbDevice,
 ) {
     @Volatile
     private var stopping = false
@@ -130,7 +130,7 @@ class UsbBridgeServer(
             Protocol.write(output, Protocol.Message.HelloAck(serverName()))
         }
 
-        var openedDevice: OpenedHidDevice? = null
+        var openedDevice: OpenedUsbDevice? = null
         var inputPump: Job? = null
 
         try {
@@ -203,12 +203,13 @@ class UsbBridgeServer(
                     }
 
                     is Protocol.Message.OutputReport -> {
-                        val device = openedDevice ?: run {
+                        if (openedDevice == null) {
                             writerMutex.withLock {
                                 Protocol.write(output, Protocol.Message.Error("No USB device is currently open"))
                             }
                             continue@session
                         }
+                        val device = checkNotNull(openedDevice)
                         val status = device.sendOutputReport(
                             reportType = message.reportType,
                             reportId = message.reportId,
@@ -220,7 +221,7 @@ class UsbBridgeServer(
                     }
 
                     is Protocol.Message.GetReportRequest -> {
-                        val device = openedDevice ?: run {
+                        if (openedDevice == null) {
                             writerMutex.withLock {
                                 Protocol.write(
                                     output,
@@ -233,6 +234,7 @@ class UsbBridgeServer(
                             }
                             continue@session
                         }
+                        val device = checkNotNull(openedDevice)
                         val data = try {
                             device.getReport(message.reportType, message.reportId)
                         } catch (_: Throwable) {
@@ -251,7 +253,7 @@ class UsbBridgeServer(
                     }
 
                     is Protocol.Message.SetReportRequest -> {
-                        val device = openedDevice ?: run {
+                        if (openedDevice == null) {
                             writerMutex.withLock {
                                 Protocol.write(
                                     output,
@@ -263,6 +265,7 @@ class UsbBridgeServer(
                             }
                             continue@session
                         }
+                        val device = checkNotNull(openedDevice)
                         val status = device.setReport(
                             reportType = message.reportType,
                             reportId = message.reportId,

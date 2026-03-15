@@ -1,5 +1,6 @@
 mod protocol;
 mod uhid;
+mod uinput;
 
 use std::env;
 use std::error::Error;
@@ -11,10 +12,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use protocol::{
-    read_message, write_message, DeviceSummary, Message, OpenDeviceAck, DEFAULT_DISCOVERY_PORT,
-    DEFAULT_TCP_PORT, DISCOVERY_REQUEST, DISCOVERY_RESPONSE_PREFIX,
+    read_message, write_message, DeviceSummary, DeviceTransport, Message, OpenDeviceAck,
+    DEFAULT_DISCOVERY_PORT, DEFAULT_TCP_PORT, DISCOVERY_REQUEST, DISCOVERY_RESPONSE_PREFIX,
 };
 use uhid::UhidDevice;
+use uinput::XInput360Device;
 
 fn main() {
     if let Err(error) = run() {
@@ -192,6 +194,13 @@ fn attach_session(
 }
 
 fn attach_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachFailure> {
+    match spec.transport {
+        DeviceTransport::Hid => attach_hid_loop(stream, spec),
+        DeviceTransport::XInput360 => attach_xinput_loop(stream, spec),
+    }
+}
+
+fn attach_hid_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachFailure> {
     let device = Arc::new(
         UhidDevice::create(&spec)
             .map_err(|error| AttachFailure::Fatal(format!("failed to create UHID device: {error}")))?,
@@ -268,6 +277,44 @@ fn attach_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachFailu
     let _ = device.destroy();
     let _ = uhid_thread.join();
     Err(outcome)
+}
+
+fn attach_xinput_loop(mut stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachFailure> {
+    let mut device = XInput360Device::create(&spec)
+        .map_err(|error| AttachFailure::Fatal(format!("failed to create virtual XInput device: {error}")))?;
+    stream
+        .set_nodelay(true)
+        .map_err(|error| AttachFailure::Retryable(format!("failed to configure TCP stream: {error}")))?;
+
+    loop {
+        match read_message(&mut stream) {
+            Ok(Message::InputReport { data }) => {
+                if let Err(error) = device.send_input_report(&data) {
+                    return Err(AttachFailure::Fatal(format!(
+                        "failed to inject XInput state into uinput: {error}"
+                    )));
+                }
+            }
+            Ok(Message::Ping) => {
+                if let Err(error) = write_message(&mut stream, &Message::Pong) {
+                    return Err(AttachFailure::Retryable(format!(
+                        "failed to respond to host ping: {error}"
+                    )));
+                }
+            }
+            Ok(Message::Pong) => {}
+            Ok(Message::Error { message }) => {
+                return Err(AttachFailure::Retryable(message));
+            }
+            Ok(Message::GetReportResponse { .. } | Message::SetReportResponse { .. }) => {}
+            Ok(other) => {
+                eprintln!("USBoss: ignoring unexpected message during xinput attach: {other:?}");
+            }
+            Err(error) => {
+                return Err(AttachFailure::Retryable(format!("session ended: {error}")));
+            }
+        }
+    }
 }
 
 fn connect_target(target: Target) -> Result<TcpStream, Box<dyn Error>> {
@@ -475,7 +522,7 @@ Commands:
   usboss-client attach [--host 192.168.1.20] [--device-id 1] [--retry-ms 1500] [--rescan-ms 1000] [--once]
 
 If --host is omitted, attach/list will try UDP broadcast discovery on the local subnet.
-Attach mode stays connected, reconnects automatically, and waits for HID devices to appear unless --once is passed.
+Attach mode stays connected, reconnects automatically, and waits for controller devices to appear unless --once is passed.
 "
     );
 }
@@ -490,6 +537,7 @@ struct AttachConfig {
 }
 
 struct DeviceMatcher {
+    transport: DeviceTransport,
     vendor_id: u16,
     product_id: u16,
     interface_number: u8,
@@ -501,6 +549,7 @@ struct DeviceMatcher {
 impl DeviceMatcher {
     fn from_device(device: &DeviceSummary) -> Self {
         Self {
+            transport: device.transport,
             vendor_id: device.vendor_id,
             product_id: device.product_id,
             interface_number: device.interface_number,
@@ -515,7 +564,8 @@ impl DeviceMatcher {
     }
 
     fn matches(&self, device: &DeviceSummary) -> bool {
-        if device.vendor_id != self.vendor_id
+        if device.transport != self.transport
+            || device.vendor_id != self.vendor_id
             || device.product_id != self.product_id
             || device.interface_number != self.interface_number
         {
@@ -597,7 +647,7 @@ fn waiting_message(
     preferred_matcher: Option<&DeviceMatcher>,
 ) -> String {
     match (devices.is_empty(), requested_device_id, preferred_matcher.is_some()) {
-        (true, _, _) => "host is online but no compatible USB HID interfaces are currently available".to_string(),
+        (true, _, _) => "host is online but no compatible USB controller interfaces are currently available".to_string(),
         (false, Some(device_id), true) => format!(
             "device id {device_id} is not currently advertised; waiting for the previously selected controller to return"
         ),
@@ -605,7 +655,7 @@ fn waiting_message(
             format!("device id {device_id} is not currently advertised by the host")
         }
         (false, None, true) => "waiting for the previously selected controller to return".to_string(),
-        (false, None, false) => "waiting for a compatible USB HID interface".to_string(),
+        (false, None, false) => "waiting for a compatible USB controller interface".to_string(),
     }
 }
 
@@ -614,8 +664,9 @@ fn device_snapshot(devices: &[DeviceSummary]) -> String {
         .iter()
         .map(|device| {
             format!(
-                "{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}",
                 device.device_id,
+                device.transport.label(),
                 device.vendor_id,
                 device.product_id,
                 device.interface_number,

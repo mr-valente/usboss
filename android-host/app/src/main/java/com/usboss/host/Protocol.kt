@@ -7,10 +7,13 @@ import java.io.OutputStream
 import kotlin.math.min
 
 object Protocol {
-    const val PROTOCOL_VERSION = 1
+    const val PROTOCOL_VERSION = 2
     const val DEFAULT_DISCOVERY_PORT = 35_354
     const val DEFAULT_TCP_PORT = 35_355
     const val DISCOVERY_REQUEST = "USBOSS_DISCOVER_V1"
+
+    const val TRANSPORT_HID = 1
+    const val TRANSPORT_XINPUT_360 = 2
 
     const val REPORT_TYPE_INPUT = 1
     const val REPORT_TYPE_OUTPUT = 2
@@ -36,6 +39,7 @@ object Protocol {
 
     data class DeviceSummary(
         val deviceId: Int,
+        val transport: Int,
         val vendorId: Int,
         val productId: Int,
         val interfaceNumber: Int,
@@ -52,6 +56,7 @@ object Protocol {
     )
 
     data class OpenDeviceSpec(
+        val transport: Int,
         val vendorId: Int,
         val productId: Int,
         val versionBcd: Int,
@@ -130,6 +135,7 @@ object Protocol {
                 payload.writeU16(message.devices.size)
                 message.devices.forEach { device ->
                     payload.writeU32(device.deviceId)
+                    payload.writeU8(device.transport)
                     payload.writeU8(device.interfaceNumber)
                     payload.writeU8(device.interfaceClass)
                     payload.writeU8(device.interfaceSubclass)
@@ -154,6 +160,7 @@ object Protocol {
 
             is Message.OpenDeviceAck -> {
                 val spec = message.spec
+                payload.writeU8(spec.transport)
                 payload.writeU16(spec.vendorId)
                 payload.writeU16(spec.productId)
                 payload.writeU16(spec.versionBcd)
@@ -248,6 +255,7 @@ object Protocol {
                         add(
                             DeviceSummary(
                                 deviceId = reader.readU32(),
+                                transport = reader.readU8(),
                                 interfaceNumber = reader.readU8(),
                                 interfaceClass = reader.readU8(),
                                 interfaceSubclass = reader.readU8(),
@@ -272,6 +280,7 @@ object Protocol {
             TYPE_OPEN_DEVICE_ACK -> {
                 Message.OpenDeviceAck(
                     OpenDeviceSpec(
+                        transport = reader.readU8(),
                         vendorId = reader.readU16(),
                         productId = reader.readU16(),
                         versionBcd = reader.readU16(),

@@ -1,37 +1,45 @@
 # USBoss
 
-`USBoss` is a clean-room, HID-focused USB host bridge for one narrow job:
+`USBoss` is a clean-room USB host bridge for one narrow job:
 
 - Android device acts as the USB host.
-- A Linux machine recreates the HID device through `/dev/uhid`.
+- A Linux machine recreates the controller through:
+  - `/dev/uhid` for HID devices
+  - `/dev/uinput` for Xbox 360 style XInput devices
 - The transport is local-LAN only and optimized for low-latency controller traffic.
 
-This repo is intentionally not a generic VirtualHere clone. It targets USB HID game controllers and similar HID-class devices that Android can open through the public USB host APIs.
+This repo is intentionally not a generic VirtualHere clone. It targets USB HID game controllers and Xbox 360 style XInput controllers that Android can open through the public USB host APIs.
 
 ## Important caveat for your 8BitDo setup
 
-Many 8BitDo dongles can expose different USB modes. `USBoss` currently supports HID interfaces only.
+Many 8BitDo dongles can expose different USB modes. `USBoss` now prefers Xbox 360 style XInput interfaces when it sees them and still supports HID interfaces.
 
-- If the dongle shows up in `USBoss`, you are in the right mode.
-- If it does not appear, the dongle is likely presenting itself as XInput/vendor-specific USB instead of HID.
-- If that happens, switch the controller/dongle to a HID-friendly mode such as D-input or Switch mode and refresh.
+- If the dongle shows up as `XInput 360` in `USBoss`, that is the intended mode for your Shield use case.
+- If it shows up as `HID`, USBoss can still forward it, but that is less valuable on a Shield that already handles D-input well.
+- If it does not appear, the dongle is likely using a vendor-specific mode that is not Xbox 360 style XInput.
+
+Current XInput scope:
+
+- best-effort Xbox 360 style XInput support
+- not a high-confidence implementation for Xbox One / GIP devices
+- no rumble on the Linux virtual XInput path yet
 
 ## Repository layout
 
 - [android-host](/Users/nick.valente/.dev/usboss/android-host): Android APK project for the Shield host.
-- [linux-client](/Users/nick.valente/.dev/usboss/linux-client): Rust client that creates a virtual HID device on Linux.
+- [linux-client](/Users/nick.valente/.dev/usboss/linux-client): Rust client that creates a virtual HID or XInput-style device on Linux.
 - [docs/PROTOCOL.md](/Users/nick.valente/.dev/usboss/docs/PROTOCOL.md): Wire format notes.
 - [docs/BUILD_WITH_DOCKER.md](/Users/nick.valente/.dev/usboss/docs/BUILD_WITH_DOCKER.md): Containerized build instructions.
-- [docs/99-usboss-uhid.rules](/Users/nick.valente/.dev/usboss/docs/99-usboss-uhid.rules): Optional udev rule for `/dev/uhid`.
+- [docs/99-usboss-uhid.rules](/Users/nick.valente/.dev/usboss/docs/99-usboss-uhid.rules): Optional udev rule for `/dev/uhid` and `/dev/uinput`.
 - [docs/usboss-client.service](/Users/nick.valente/.dev/usboss/docs/usboss-client.service): Optional systemd service template.
 
 ## Prerequisites
 
 ### Linux client
 
-- Linux kernel with `uhid` enabled.
+- Linux kernel with `uhid` and `uinput` enabled.
 - Rust stable.
-- Permission to open `/dev/uhid`.
+- Permission to open `/dev/uhid` and `/dev/uinput`.
 
 Quick install example on Debian/Ubuntu:
 
@@ -122,7 +130,7 @@ Open the app on the Shield and leave it running. The foreground service will:
 - listen on TCP `35355`
 - answer UDP discovery on `35354`
 - show the exact `usboss-client` command to run from Linux
-- stay available even if no USB HID controller is currently plugged in
+- stay available even if no supported controller is currently plugged in
 
 ### Start the Linux client
 
@@ -141,7 +149,7 @@ Direct host:
 sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355
 ```
 
-If multiple HID interfaces are advertised, list them first:
+If multiple controller interfaces are advertised, list them first:
 
 ```bash
 sudo linux-client/target/release/usboss-client list --host SHIELD_IP:35355
@@ -151,7 +159,7 @@ sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --d
 `attach` is now a persistent runtime command:
 
 - if the host is offline, it keeps retrying
-- if the host is online but no HID device is present yet, it keeps waiting
+- if the host is online but no controller is present yet, it keeps waiting
 - if the controller is unplugged and replugged, it reconnects and reattaches automatically
 - pass `--once` if you want the old single-shot behavior for debugging
 
@@ -188,19 +196,22 @@ The right toggle depends on your current Moonlight/Sunshine config, but the symp
 ### Basic device visibility
 
 1. Start `USBoss` on the Shield.
-2. Confirm the app shows your dongle as a HID interface.
+2. Confirm the app shows your dongle as `XInput 360` or `HID`.
 3. Run:
 
 ```bash
 sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355
 ```
 
-4. In another Linux shell, verify that a new HID device exists:
+4. In another Linux shell, verify that a new input device exists:
 
 ```bash
-ls -l /dev/uhid
+ls -l /dev/uhid /dev/uinput
 grep -H . /sys/class/input/event*/device/name 2>/dev/null | grep USBoss
 ```
+
+For XInput mode, the virtual controller is created through `/dev/uinput`.
+For HID mode, the virtual controller is created through `/dev/uhid`.
 
 ### Input test
 
@@ -224,7 +235,7 @@ Press buttons on the 8BitDo controller and confirm events show up on Linux.
 2. Unplug the controller or dongle from the Android host.
 3. Confirm the Linux client drops back to a waiting/retrying state instead of exiting.
 4. Plug the controller or dongle back in.
-5. Confirm the client reconnects and the virtual HID device becomes active again.
+5. Confirm the client reconnects and the virtual controller becomes active again.
 
 ### In-game test with Sunshine
 
@@ -234,7 +245,7 @@ Press buttons on the 8BitDo controller and confirm events show up on Linux.
 4. Confirm the game sees the virtual controller.
 5. If input is doubled, adjust Moonlight/Sunshine gamepad forwarding as noted above.
 
-## Permissions for `/dev/uhid`
+## Permissions for `/dev/uhid` and `/dev/uinput`
 
 Quickest path:
 
@@ -246,9 +257,11 @@ If you want to run without `sudo`, install the udev rule from [docs/99-usboss-uh
 
 ## Known limitations
 
-- HID interfaces only. Generic USB devices are out of scope.
-- If the 8BitDo dongle is in XInput/vendor mode, `USBoss` will not currently recreate it.
+- Generic USB devices are out of scope.
+- XInput support is currently aimed at Xbox 360 style packet layouts.
+- Xbox One / GIP style devices are not currently implemented.
 - Output reports are best-effort. Basic input is the main focus of this first cut.
+- The Linux virtual XInput backend currently focuses on input. Rumble is not implemented there yet.
 - I could not compile this locally because the current environment did not have Android or Rust toolchains installed.
 
 ## Suggested next improvements
@@ -256,4 +269,5 @@ If you want to run without `sudo`, install the udev rule from [docs/99-usboss-uh
 - add a small pairing token instead of open LAN access
 - add a persistent systemd install script for the Linux client
 - add optional mDNS in addition to UDP broadcast discovery
-- add a vendor-specific transport path for common 8BitDo XInput-style dongle modes
+- add rumble / force-feedback support for the virtual XInput device
+- add explicit Xbox One / GIP transport support where Android USB behavior allows it

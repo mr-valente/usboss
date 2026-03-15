@@ -118,7 +118,7 @@ private fun UsbBossScreen(
                 }
 
                 Text(
-                    text = "USB HID Interfaces",
+                    text = "USB Controller Interfaces",
                     style = MaterialTheme.typography.titleLarge,
                     color = Color.White,
                 )
@@ -128,7 +128,7 @@ private fun UsbBossScreen(
                         colors = CardDefaults.cardColors(containerColor = Color(0x1FFFFFFF)),
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Text("No HID interfaces detected.", color = Color.White)
+                            Text("No supported controller interfaces detected.", color = Color.White)
                             Spacer(Modifier.height(8.dp))
                             Text(
                                 "It is fine to leave the host running before the controller is plugged in. Linux attach mode can stay connected and wait.",
@@ -136,7 +136,7 @@ private fun UsbBossScreen(
                             )
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                "If your 8BitDo dongle is in XInput mode, switch it to a HID-friendly mode such as D-input or Switch mode and refresh.",
+                                "USBoss now prefers XInput 360 style interfaces for 8BitDo dongles and still supports HID devices when available.",
                                 color = Color(0xFFD5D9E0),
                             )
                         }
@@ -220,7 +220,7 @@ private fun SummaryCard(state: HostUiState) {
 }
 
 @Composable
-private fun DeviceCard(candidate: HidCandidate) {
+private fun DeviceCard(candidate: UsbCandidate) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
         modifier = Modifier.fillMaxWidth(),
@@ -231,7 +231,7 @@ private fun DeviceCard(candidate: HidCandidate) {
         ) {
             Text(candidate.displayName, color = Color.White, fontWeight = FontWeight.SemiBold)
             Text(
-                "VID:PID ${candidate.vendorId.toString(16).padStart(4, '0')}:${candidate.productId.toString(16).padStart(4, '0')}  iface ${candidate.interfaceNumber}",
+                "${candidate.transportLabel}  VID:PID ${candidate.vendorId.toString(16).padStart(4, '0')}:${candidate.productId.toString(16).padStart(4, '0')}  iface ${candidate.interfaceNumber}",
                 color = Color(0xFFD5D9E0),
             )
             Text(

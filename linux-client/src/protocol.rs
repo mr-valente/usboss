@@ -1,7 +1,7 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const DEFAULT_DISCOVERY_PORT: u16 = 35_354;
 pub const DEFAULT_TCP_PORT: u16 = 35_355;
 pub const DISCOVERY_REQUEST: &[u8] = b"USBOSS_DISCOVER_V1";
@@ -23,9 +23,36 @@ const TYPE_SET_REPORT_RESPONSE: u32 = 25;
 const TYPE_PING: u32 = 26;
 const TYPE_PONG: u32 = 27;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeviceTransport {
+    Hid = 1,
+    XInput360 = 2,
+}
+
+impl DeviceTransport {
+    fn from_u8(value: u8) -> io::Result<Self> {
+        match value {
+            1 => Ok(DeviceTransport::Hid),
+            2 => Ok(DeviceTransport::XInput360),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown device transport {other}"),
+            )),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DeviceTransport::Hid => "hid",
+            DeviceTransport::XInput360 => "xinput-360",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DeviceSummary {
     pub device_id: u32,
+    pub transport: DeviceTransport,
     pub vendor_id: u16,
     pub product_id: u16,
     pub interface_number: u8,
@@ -43,6 +70,7 @@ pub struct DeviceSummary {
 
 #[derive(Clone, Debug)]
 pub struct OpenDeviceAck {
+    pub transport: DeviceTransport,
     pub vendor_id: u16,
     pub product_id: u16,
     pub version_bcd: u16,
@@ -112,11 +140,14 @@ impl fmt::Display for DeviceSummary {
                 self.manufacturer.clone()
             },
             if self.product.is_empty() {
-                "USB HID".to_string()
+                match self.transport {
+                    DeviceTransport::Hid => "USB HID".to_string(),
+                    DeviceTransport::XInput360 => "USB XInput".to_string(),
+                }
             } else {
                 self.product.clone()
             },
-            self.system_path
+            format!("{} [{}]", self.system_path, self.transport.label())
         )
     }
 }
@@ -139,6 +170,7 @@ pub fn write_message(writer: &mut impl Write, message: &Message) -> io::Result<(
             write_u16(&mut payload, try_u16(devices.len())?);
             for device in devices {
                 write_u32(&mut payload, device.device_id);
+                payload.push(device.transport as u8);
                 payload.push(device.interface_number);
                 payload.push(device.interface_class);
                 payload.push(device.interface_subclass);
@@ -160,6 +192,7 @@ pub fn write_message(writer: &mut impl Write, message: &Message) -> io::Result<(
             TYPE_OPEN_DEVICE
         }
         Message::OpenDeviceAck(spec) => {
+            payload.push(spec.transport as u8);
             write_u16(&mut payload, spec.vendor_id);
             write_u16(&mut payload, spec.product_id);
             write_u16(&mut payload, spec.version_bcd);
@@ -273,6 +306,7 @@ pub fn read_message(reader: &mut impl Read) -> io::Result<Message> {
             let mut devices = Vec::with_capacity(count);
             for _ in 0..count {
                 let device_id = read_u32(&payload, &mut cursor)?;
+                let transport = DeviceTransport::from_u8(read_u8(&payload, &mut cursor)?)?;
                 let interface_number = read_u8(&payload, &mut cursor)?;
                 let interface_class = read_u8(&payload, &mut cursor)?;
                 let interface_subclass = read_u8(&payload, &mut cursor)?;
@@ -288,6 +322,7 @@ pub fn read_message(reader: &mut impl Read) -> io::Result<Message> {
                 let system_path = read_string(&payload, &mut cursor)?;
                 devices.push(DeviceSummary {
                     device_id,
+                    transport,
                     vendor_id,
                     product_id,
                     interface_number,
@@ -309,6 +344,7 @@ pub fn read_message(reader: &mut impl Read) -> io::Result<Message> {
             device_id: read_u32(&payload, &mut cursor)?,
         }),
         TYPE_OPEN_DEVICE_ACK => Ok(Message::OpenDeviceAck(OpenDeviceAck {
+            transport: DeviceTransport::from_u8(read_u8(&payload, &mut cursor)?)?,
             vendor_id: read_u16(&payload, &mut cursor)?,
             product_id: read_u16(&payload, &mut cursor)?,
             version_bcd: read_u16(&payload, &mut cursor)?,

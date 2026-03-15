@@ -2,6 +2,8 @@
 
 `USBoss` uses a small binary protocol over TCP.
 
+Current wire protocol version: `2`
+
 ## Discovery
 
 - Client sends UDP broadcast payload `USBOSS_DISCOVER_V1` to port `35354`.
@@ -53,9 +55,21 @@ Strings and byte arrays inside the payload are:
 7. Linux sends `OPEN_DEVICE`.
 8. Android replies with `OPEN_DEVICE_ACK` or `ERROR`.
 9. Android streams interrupt-IN data as `INPUT_REPORT`.
-10. Linux forwards UHID output/get/set-report traffic back to Android.
+10. Linux uses the selected backend:
+    - HID: recreate through UHID and forward output/get/set-report traffic back to Android.
+    - XInput 360: recreate through uinput and forward raw input packets into the virtual gamepad.
 
 `ERROR` during `OPEN_DEVICE` is a normal runtime outcome when a controller disappears between enumeration and open. The Linux client is expected to keep waiting or reconnect.
+
+## Device transports
+
+`DEVICES` and `OPEN_DEVICE_ACK` now carry a transport byte:
+
+- `1`: HID
+- `2`: Xbox 360 style XInput
+
+For HID transports, Linux recreates the device through `/dev/uhid`.
+For XInput transports, Linux recreates a virtual controller through `/dev/uinput`.
 
 ## Report type values
 
