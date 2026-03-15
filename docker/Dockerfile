@@ -39,7 +39,9 @@ RUN mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" \
     && mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest" \
     && rm /tmp/android-cmdline-tools.zip
 
-RUN yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null \
+RUN set +o pipefail \
+    && yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null \
+    && set -o pipefail \
     && sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" \
         "build-tools;35.0.0" \
         "platform-tools" \
