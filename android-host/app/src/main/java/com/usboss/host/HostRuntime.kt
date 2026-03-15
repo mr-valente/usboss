@@ -25,6 +25,7 @@ object HostRuntime {
     private var candidatesById: Map<Int, HidCandidate> = emptyMap()
 
     fun start(context: Context) {
+        updateError(null)
         refreshDevices(context)
         if (server != null) {
             mutableState.update { it.copy(serviceRunning = true) }
@@ -71,18 +72,31 @@ object HostRuntime {
     }
 
     fun refreshDevices(context: Context) {
-        val devices = UsbDeviceCatalog.enumerate(context)
-        candidatesById = devices.associateBy { it.id }
-        mutableState.update {
-            it.copy(
-                devices = devices,
-                serverIp = findLocalIpv4Address().orEmpty(),
-            )
+        runCatching {
+            val devices = UsbDeviceCatalog.enumerate(context)
+            candidatesById = devices.associateBy { it.id }
+            mutableState.update {
+                it.copy(
+                    devices = devices,
+                    serverIp = findLocalIpv4Address().orEmpty(),
+                    lastError = null,
+                )
+            }
+        }.onFailure { error ->
+            mutableState.update {
+                it.copy(
+                    lastError = "USB refresh failed: ${error.message}",
+                )
+            }
         }
     }
 
     fun requestPermissions(context: Context) {
-        UsbDeviceCatalog.requestPermissions(context, state.value.devices, ACTION_USB_PERMISSION)
+        runCatching {
+            UsbDeviceCatalog.requestPermissions(context, state.value.devices, ACTION_USB_PERMISSION)
+        }.onFailure { error ->
+            updateError("USB permission request failed: ${error.message}")
+        }
     }
 
     fun updateStatus(message: String) {

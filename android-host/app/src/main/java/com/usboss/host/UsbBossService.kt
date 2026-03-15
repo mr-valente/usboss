@@ -1,5 +1,6 @@
 package com.usboss.host
 
+import android.content.pm.ServiceInfo
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -12,46 +13,67 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import android.util.Log
 
 class UsbBossService : Service() {
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
+        try {
+            createNotificationChannel()
 
-        val filter = IntentFilter().apply {
-            addAction(HostRuntime.ACTION_USB_PERMISSION)
-            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
-            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+            val filter = IntentFilter().apply {
+                addAction(HostRuntime.ACTION_USB_PERMISSION)
+                addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+                addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+            }
+            ContextCompat.registerReceiver(
+                this,
+                receiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        } catch (error: Throwable) {
+            Log.e(TAG, "Service initialization failed", error)
+            HostRuntime.updateError("USBoss service init failed: ${error.message}")
+            throw error
         }
-        ContextCompat.registerReceiver(
-            this,
-            receiver,
-            filter,
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                HostRuntime.stop()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-            }
+        return try {
+            when (intent?.action) {
+                ACTION_STOP -> {
+                    HostRuntime.stop()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
 
-            ACTION_REFRESH -> HostRuntime.refreshDevices(this)
-            ACTION_REQUEST_PERMISSIONS -> HostRuntime.requestPermissions(this)
-            ACTION_START, null -> {
-                startForeground(NOTIFICATION_ID, buildNotification())
-                HostRuntime.start(this)
+                ACTION_REFRESH -> HostRuntime.refreshDevices(this)
+                ACTION_REQUEST_PERMISSIONS -> HostRuntime.requestPermissions(this)
+                ACTION_START, null -> {
+                    ServiceCompat.startForeground(
+                        this,
+                        NOTIFICATION_ID,
+                        buildNotification(),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                    )
+                    HostRuntime.start(this)
+                }
             }
+            START_STICKY
+        } catch (error: Throwable) {
+            Log.e(TAG, "Service start command failed: ${intent?.action}", error)
+            HostRuntime.updateError("USBoss service error: ${error.message}")
+            HostRuntime.updateStatus("Service failed to start")
+            stopSelf()
+            START_NOT_STICKY
         }
-        return START_STICKY
     }
 
     override fun onDestroy() {
-        unregisterReceiver(receiver)
+        runCatching { unregisterReceiver(receiver) }
         HostRuntime.stop()
         super.onDestroy()
     }
@@ -102,6 +124,7 @@ class UsbBossService : Service() {
     }
 
     companion object {
+        private const val TAG = "USBoss"
         const val ACTION_START = "com.usboss.host.START"
         const val ACTION_STOP = "com.usboss.host.STOP"
         const val ACTION_REFRESH = "com.usboss.host.REFRESH"

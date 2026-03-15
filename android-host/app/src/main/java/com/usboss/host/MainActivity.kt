@@ -39,20 +39,25 @@ class MainActivity : ComponentActivity() {
         setContent {
             val state by HostRuntime.state.collectAsState()
             LaunchedEffect(Unit) {
-                dispatchServiceAction(this@MainActivity, UsbBossService.ACTION_START)
+                HostRuntime.refreshDevices(this@MainActivity)
             }
             UsbBossScreen(
                 state = state,
                 onStart = { dispatchServiceAction(this, UsbBossService.ACTION_START) },
                 onStop = { dispatchServiceAction(this, UsbBossService.ACTION_STOP) },
-                onRefresh = { dispatchServiceAction(this, UsbBossService.ACTION_REFRESH) },
-                onGrant = { dispatchServiceAction(this, UsbBossService.ACTION_REQUEST_PERMISSIONS) },
+                onRefresh = { HostRuntime.refreshDevices(this) },
+                onGrant = { HostRuntime.requestPermissions(this) },
             )
         }
     }
 
     private fun dispatchServiceAction(context: Context, action: String) {
-        ContextCompat.startForegroundService(context, UsbBossService.intent(context, action))
+        val intent = UsbBossService.intent(context, action)
+        if (action == UsbBossService.ACTION_START) {
+            ContextCompat.startForegroundService(context, intent)
+        } else {
+            context.startService(intent)
+        }
     }
 }
 

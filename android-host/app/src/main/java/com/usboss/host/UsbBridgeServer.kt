@@ -9,6 +9,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import android.util.Log
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.EOFException
@@ -26,6 +27,8 @@ class UsbBridgeServer(
     private val devicesProvider: () -> List<Protocol.DeviceSummary>,
     private val openDevice: (Int) -> OpenedHidDevice,
 ) {
+    @Volatile
+    private var stopping = false
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var discoverySocket: DatagramSocket? = null
     private var serverSocket: ServerSocket? = null
@@ -35,15 +38,33 @@ class UsbBridgeServer(
     private var activeClientSocket: Socket? = null
 
     fun start() {
+        stopping = false
         discoveryJob = ioScope.launch {
-            runDiscoveryLoop()
+            try {
+                runDiscoveryLoop()
+            } catch (error: Throwable) {
+                if (!stopping) {
+                    Log.e(TAG, "Discovery loop failed", error)
+                    onError("Discovery error: ${error.message}")
+                    onStatus("Discovery unavailable")
+                }
+            }
         }
         acceptJob = ioScope.launch {
-            runAcceptLoop()
+            try {
+                runAcceptLoop()
+            } catch (error: Throwable) {
+                if (!stopping) {
+                    Log.e(TAG, "Accept loop failed", error)
+                    onError("Server error: ${error.message}")
+                    onStatus("Server unavailable")
+                }
+            }
         }
     }
 
     fun stop() {
+        stopping = true
         discoverySocket?.close()
         serverSocket?.close()
         activeClientSocket?.close()
@@ -251,5 +272,9 @@ class UsbBridgeServer(
     private fun serverName(): String {
         val model = android.os.Build.MODEL ?: "Android Host"
         return "USBoss on $model"
+    }
+
+    companion object {
+        private const val TAG = "USBoss"
     }
 }
