@@ -26,6 +26,10 @@ class OpenedHidDevice(
     private val versionBcd: Int,
 ) {
     private val closed = AtomicBoolean(false)
+    val displayName: String
+        get() = candidate.displayName
+    val systemPath: String
+        get() = candidate.systemPath
 
     fun protocolSpec(): Protocol.OpenDeviceSpec {
         val serial = candidate.serial.ifBlank { "" }

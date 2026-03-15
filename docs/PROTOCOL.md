@@ -49,10 +49,13 @@ Strings and byte arrays inside the payload are:
 3. Android replies with `HELLO_ACK`.
 4. Linux sends `LIST_DEVICES`.
 5. Android replies with `DEVICES`.
-6. Linux sends `OPEN_DEVICE`.
-7. Android replies with `OPEN_DEVICE_ACK`.
-8. Android streams interrupt-IN data as `INPUT_REPORT`.
-9. Linux forwards UHID output/get/set-report traffic back to Android.
+6. Linux may repeat `LIST_DEVICES` while it waits for a controller to appear.
+7. Linux sends `OPEN_DEVICE`.
+8. Android replies with `OPEN_DEVICE_ACK` or `ERROR`.
+9. Android streams interrupt-IN data as `INPUT_REPORT`.
+10. Linux forwards UHID output/get/set-report traffic back to Android.
+
+`ERROR` during `OPEN_DEVICE` is a normal runtime outcome when a controller disappears between enumeration and open. The Linux client is expected to keep waiting or reconnect.
 
 ## Report type values
 

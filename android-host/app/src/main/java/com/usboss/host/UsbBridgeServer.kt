@@ -36,6 +36,8 @@ class UsbBridgeServer(
     private var acceptJob: Job? = null
     @Volatile
     private var activeClientSocket: Socket? = null
+    @Volatile
+    private var activeDeviceSystemPath: String? = null
 
     fun start() {
         stopping = false
@@ -68,11 +70,22 @@ class UsbBridgeServer(
         discoverySocket?.close()
         serverSocket?.close()
         activeClientSocket?.close()
+        activeDeviceSystemPath = null
         ioScope.launch {
             discoveryJob?.cancelAndJoin()
             acceptJob?.cancelAndJoin()
         }
         onClientChanged(null)
+    }
+
+    fun onAvailableDevicesChanged(availablePaths: Set<String>) {
+        val activePath = activeDeviceSystemPath ?: return
+        if (activePath in availablePaths) {
+            return
+        }
+        onStatus("Active USB device disconnected; waiting for it to return")
+        onError("The currently forwarded USB device was unplugged.")
+        runCatching { activeClientSocket?.close() }
     }
 
     private suspend fun runAcceptLoop() {
@@ -121,7 +134,7 @@ class UsbBridgeServer(
         var inputPump: Job? = null
 
         try {
-            while (scope.isActive && !socket.isClosed) {
+            session@ while (scope.isActive && !socket.isClosed) {
                 when (val message = Protocol.read(input)) {
                     Protocol.Message.ListDevices -> {
                         writerMutex.withLock {
@@ -135,9 +148,30 @@ class UsbBridgeServer(
                     is Protocol.Message.OpenDevice -> {
                         inputPump?.cancelAndJoin()
                         openedDevice?.close()
+                        activeDeviceSystemPath = null
+                        openedDevice = null
 
-                        openedDevice = openDevice(message.deviceId)
-                        val device = checkNotNull(openedDevice)
+                        val deviceResult = runCatching {
+                            openDevice(message.deviceId)
+                        }
+                        if (deviceResult.isFailure) {
+                            val error = deviceResult.exceptionOrNull()
+                            val errorMessage = error?.message ?: "Failed to open USB device"
+                            onStatus("Open request failed; waiting for a usable USB device")
+                            onError(errorMessage)
+                            writerMutex.withLock {
+                                Protocol.write(
+                                    output,
+                                    Protocol.Message.Error(
+                                        errorMessage,
+                                    ),
+                                )
+                            }
+                            continue@session
+                        }
+                        val device = deviceResult.getOrThrow()
+                        openedDevice = device
+                        activeDeviceSystemPath = device.systemPath
                         val spec = device.protocolSpec()
 
                         writerMutex.withLock {
@@ -159,6 +193,7 @@ class UsbBridgeServer(
                                 },
                                 onError = { error ->
                                     onError(error.message ?: "USB read failed")
+                                    onStatus("USB device disconnected; waiting for Linux to reconnect")
                                     runCatching { socket.close() }
                                 },
                             ).join()
@@ -168,7 +203,12 @@ class UsbBridgeServer(
                     }
 
                     is Protocol.Message.OutputReport -> {
-                        val device = openedDevice ?: throw IllegalStateException("No device is open")
+                        val device = openedDevice ?: run {
+                            writerMutex.withLock {
+                                Protocol.write(output, Protocol.Message.Error("No USB device is currently open"))
+                            }
+                            continue@session
+                        }
                         val status = device.sendOutputReport(
                             reportType = message.reportType,
                             reportId = message.reportId,
@@ -180,7 +220,19 @@ class UsbBridgeServer(
                     }
 
                     is Protocol.Message.GetReportRequest -> {
-                        val device = openedDevice ?: throw IllegalStateException("No device is open")
+                        val device = openedDevice ?: run {
+                            writerMutex.withLock {
+                                Protocol.write(
+                                    output,
+                                    Protocol.Message.GetReportResponse(
+                                        requestId = message.requestId,
+                                        status = 5,
+                                        data = ByteArray(0),
+                                    ),
+                                )
+                            }
+                            continue@session
+                        }
                         val data = try {
                             device.getReport(message.reportType, message.reportId)
                         } catch (_: Throwable) {
@@ -199,7 +251,18 @@ class UsbBridgeServer(
                     }
 
                     is Protocol.Message.SetReportRequest -> {
-                        val device = openedDevice ?: throw IllegalStateException("No device is open")
+                        val device = openedDevice ?: run {
+                            writerMutex.withLock {
+                                Protocol.write(
+                                    output,
+                                    Protocol.Message.SetReportResponse(
+                                        requestId = message.requestId,
+                                        status = 5,
+                                    ),
+                                )
+                            }
+                            continue@session
+                        }
                         val status = device.setReport(
                             reportType = message.reportType,
                             reportId = message.reportId,
@@ -232,6 +295,7 @@ class UsbBridgeServer(
         } finally {
             inputPump?.cancelAndJoin()
             openedDevice?.close()
+            activeDeviceSystemPath = null
         }
     }
 

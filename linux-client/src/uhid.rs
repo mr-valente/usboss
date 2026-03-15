@@ -1,5 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::protocol::{Message, OpenDeviceAck};
@@ -30,6 +31,7 @@ const UHID_INPUT_REPORT: u8 = 2;
 pub struct UhidDevice {
     writer: Arc<Mutex<File>>,
     reader: Arc<Mutex<File>>,
+    shutting_down: Arc<AtomicBool>,
 }
 
 impl UhidDevice {
@@ -52,6 +54,7 @@ impl UhidDevice {
         let device = Self {
             writer: Arc::new(Mutex::new(writer)),
             reader: Arc::new(Mutex::new(file)),
+            shutting_down: Arc::new(AtomicBool::new(false)),
         };
         device.write_create2(spec)?;
         Ok(device)
@@ -96,6 +99,7 @@ impl UhidDevice {
     }
 
     pub fn destroy(&self) -> io::Result<()> {
+        self.shutting_down.store(true, Ordering::SeqCst);
         let mut event = vec![0u8; UHID_EVENT_SIZE];
         write_u32(&mut event, 0, UHID_DESTROY);
         self.write_event(&event)
@@ -107,9 +111,15 @@ impl UhidDevice {
     {
         let mut buffer = vec![0u8; UHID_EVENT_SIZE];
         loop {
-            {
+            let read_result = {
                 let mut reader = lock(&self.reader)?;
-                reader.read_exact(&mut buffer)?;
+                reader.read_exact(&mut buffer)
+            };
+            if let Err(error) = read_result {
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
+                return Err(error);
             }
 
             match read_u32(&buffer, 0) {
@@ -119,12 +129,18 @@ impl UhidDevice {
                 }
                 UHID_STOP => {
                     eprintln!("USBoss: UHID device stopped");
+                    if self.shutting_down.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
                 }
                 UHID_OPEN => {
                     eprintln!("USBoss: Linux opened the virtual HID device");
                 }
                 UHID_CLOSE => {
                     eprintln!("USBoss: Linux closed the virtual HID device");
+                    if self.shutting_down.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
                 }
                 UHID_OUTPUT => {
                     let size = read_u16(&buffer, 4) as usize;

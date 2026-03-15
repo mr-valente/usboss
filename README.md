@@ -122,6 +122,7 @@ Open the app on the Shield and leave it running. The foreground service will:
 - listen on TCP `35355`
 - answer UDP discovery on `35354`
 - show the exact `usboss-client` command to run from Linux
+- stay available even if no USB HID controller is currently plugged in
 
 ### Start the Linux client
 
@@ -146,6 +147,30 @@ If multiple HID interfaces are advertised, list them first:
 sudo linux-client/target/release/usboss-client list --host SHIELD_IP:35355
 sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --device-id 1
 ```
+
+`attach` is now a persistent runtime command:
+
+- if the host is offline, it keeps retrying
+- if the host is online but no HID device is present yet, it keeps waiting
+- if the controller is unplugged and replugged, it reconnects and reattaches automatically
+- pass `--once` if you want the old single-shot behavior for debugging
+
+You can tune the retry loop if needed:
+
+```bash
+sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --retry-ms 1500 --rescan-ms 1000
+```
+
+## Everyday runtime behavior
+
+These states are now treated as normal:
+
+- start the Shield host first, then plug the controller in later
+- start the Linux client first, then turn on the Shield host later
+- unplug and replug the controller while the host is already running
+- restart either side and let `attach` settle back into a healthy connection
+
+For your use case, the intended steady state is simply to leave the Android host service running and leave `usboss-client attach` running on Linux.
 
 ## Avoid duplicate input with Moonlight/Sunshine
 
@@ -192,6 +217,14 @@ sudo libinput debug-events
 ```
 
 Press buttons on the 8BitDo controller and confirm events show up on Linux.
+
+### Hotplug test
+
+1. Leave `usboss-client attach` running.
+2. Unplug the controller or dongle from the Android host.
+3. Confirm the Linux client drops back to a waiting/retrying state instead of exiting.
+4. Plug the controller or dongle back in.
+5. Confirm the client reconnects and the virtual HID device becomes active again.
 
 ### In-game test with Sunshine
 

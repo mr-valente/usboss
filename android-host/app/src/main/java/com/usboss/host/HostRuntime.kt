@@ -27,6 +27,7 @@ object HostRuntime {
     fun start(context: Context) {
         updateError(null)
         refreshDevices(context)
+        requestPermissions(context)
         if (server != null) {
             mutableState.update { it.copy(serviceRunning = true) }
             return
@@ -53,7 +54,7 @@ object HostRuntime {
         mutableState.update {
             it.copy(
                 serviceRunning = true,
-                status = "Listening for Linux clients",
+                status = listeningStatus(it.devices),
                 serverIp = findLocalIpv4Address().orEmpty(),
             )
         }
@@ -75,6 +76,7 @@ object HostRuntime {
         runCatching {
             val devices = UsbDeviceCatalog.enumerate(context)
             candidatesById = devices.associateBy { it.id }
+            server?.onAvailableDevicesChanged(devices.map(HidCandidate::systemPath).toSet())
             mutableState.update {
                 it.copy(
                     devices = devices,
@@ -105,6 +107,14 @@ object HostRuntime {
 
     fun updateError(message: String?) {
         mutableState.update { it.copy(lastError = message) }
+    }
+
+    private fun listeningStatus(devices: List<HidCandidate>): String {
+        return if (devices.isEmpty()) {
+            "Listening for Linux clients (no USB HID devices yet)"
+        } else {
+            "Listening for Linux clients"
+        }
     }
 
     private fun findLocalIpv4Address(): String? {

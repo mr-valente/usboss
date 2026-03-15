@@ -131,6 +131,11 @@ private fun UsbBossScreen(
                             Text("No HID interfaces detected.", color = Color.White)
                             Spacer(Modifier.height(8.dp))
                             Text(
+                                "It is fine to leave the host running before the controller is plugged in. Linux attach mode can stay connected and wait.",
+                                color = Color(0xFFD5D9E0),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
                                 "If your 8BitDo dongle is in XInput mode, switch it to a HID-friendly mode such as D-input or Switch mode and refresh.",
                                 color = Color(0xFFD5D9E0),
                             )
@@ -205,6 +210,10 @@ private fun SummaryCard(state: HostUiState) {
             Text(
                 "Connected client: ${state.connectedClient ?: "none"}",
                 color = Color(0xFFD5D9E0),
+            )
+            Text(
+                "Attach mode on Linux will keep retrying and reconnect automatically.",
+                color = Color(0xFF9FA7B5),
             )
         }
     }

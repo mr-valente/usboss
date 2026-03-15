@@ -3,6 +3,7 @@ mod uhid;
 
 use std::env;
 use std::error::Error;
+use std::fmt;
 use std::io;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::{Arc, Mutex};
@@ -43,28 +44,20 @@ fn run() -> Result<(), Box<dyn Error>> {
             let devices = list_devices(&mut stream)?;
             print_devices(&devices);
         }
-        Command::Attach { host, device_id } => {
-            let target = resolve_target(host)?;
-            let mut stream = connect_target(target)?;
-            hello(&mut stream)?;
-            let devices = list_devices(&mut stream)?;
-            if devices.is_empty() {
-                return Err("no compatible USB HID interfaces reported by the Android host".into());
-            }
-            print_devices(&devices);
-
-            let selected = match device_id {
-                Some(id) => devices
-                    .iter()
-                    .find(|device| device.device_id == id)
-                    .cloned()
-                    .ok_or_else(|| format!("device id {id} was not advertised by the host"))?,
-                None => devices[0].clone(),
-            };
-            println!("Attaching to {selected}");
-
-            let spec = open_device(&mut stream, selected.device_id)?;
-            attach_loop(stream, spec)?;
+        Command::Attach {
+            host,
+            device_id,
+            retry_ms,
+            rescan_ms,
+            once,
+        } => {
+            run_attach(AttachConfig {
+                host,
+                requested_device_id: device_id,
+                retry_delay: Duration::from_millis(retry_ms),
+                rescan_delay: Duration::from_millis(rescan_ms),
+                once,
+            })?;
         }
     }
 
@@ -106,13 +99,112 @@ fn open_device(stream: &mut TcpStream, device_id: u32) -> Result<OpenDeviceAck, 
     }
 }
 
-fn attach_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), Box<dyn Error>> {
-    let device = Arc::new(UhidDevice::create(&spec)?);
-    let writer = Arc::new(Mutex::new(stream.try_clone()?));
+fn run_attach(config: AttachConfig) -> Result<(), Box<dyn Error>> {
+    let mut preferred_matcher = None;
+
+    loop {
+        let target = match resolve_target(config.host.clone()) {
+            Ok(target) => target,
+            Err(error) => {
+                if config.once {
+                    return Err(error);
+                }
+                announce_retry(&error.to_string(), config.retry_delay);
+                continue;
+            }
+        };
+
+        match attach_session(&target, &config, &mut preferred_matcher) {
+            Ok(()) => return Ok(()),
+            Err(AttachFailure::Retryable(message)) if config.once => return Err(message.into()),
+            Err(AttachFailure::Retryable(message)) => {
+                announce_retry(&message, config.retry_delay);
+            }
+            Err(AttachFailure::Fatal(message)) => return Err(message.into()),
+        }
+    }
+}
+
+fn attach_session(
+    target: &Target,
+    config: &AttachConfig,
+    preferred_matcher: &mut Option<DeviceMatcher>,
+) -> Result<(), AttachFailure> {
+    let mut stream = connect_target(target.clone()).map_err(|error| {
+        AttachFailure::Retryable(format!("unable to connect to {}:{}: {error}", target.host, target.port))
+    })?;
+    hello(&mut stream).map_err(|error| classify_control_error("handshake failed", &*error))?;
+
+    let mut last_snapshot: Option<String> = None;
+    let mut last_waiting_message = String::new();
+
+    loop {
+        let devices =
+            list_devices(&mut stream).map_err(|error| classify_control_error("device listing failed", &*error))?;
+        let snapshot = device_snapshot(&devices);
+        if last_snapshot.as_deref() != Some(snapshot.as_str()) {
+            print_devices(&devices);
+            last_snapshot = Some(snapshot);
+        }
+
+        let selected = match select_device(
+            &devices,
+            config.requested_device_id,
+            preferred_matcher.as_ref(),
+        ) {
+            Some(device) => {
+                last_waiting_message.clear();
+                device.clone()
+            }
+            None => {
+                let message = waiting_message(&devices, config.requested_device_id, preferred_matcher.as_ref());
+                if config.once {
+                    return Err(AttachFailure::Retryable(message));
+                }
+                if message != last_waiting_message {
+                    eprintln!("USBoss: {message}");
+                    last_waiting_message = message;
+                }
+                thread::sleep(config.rescan_delay);
+                continue;
+            }
+        };
+
+        let matcher = DeviceMatcher::from_device(&selected);
+        println!("Attaching to {selected}");
+
+        let spec = match open_device(&mut stream, selected.device_id) {
+            Ok(spec) => spec,
+            Err(error) => {
+                let message = format!("failed to open {selected}: {error}");
+                if config.once {
+                    return Err(AttachFailure::Retryable(message));
+                }
+                eprintln!("USBoss: {message}");
+                thread::sleep(config.rescan_delay);
+                continue;
+            }
+        };
+
+        *preferred_matcher = Some(matcher);
+        return attach_loop(stream, spec);
+    }
+}
+
+fn attach_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachFailure> {
+    let device = Arc::new(
+        UhidDevice::create(&spec)
+            .map_err(|error| AttachFailure::Fatal(format!("failed to create UHID device: {error}")))?,
+    );
+    let writer = Arc::new(Mutex::new(
+        stream
+            .try_clone()
+            .map_err(|error| AttachFailure::Retryable(format!("failed to clone TCP stream: {error}")))?,
+    ));
     let writer_for_uhid = Arc::clone(&writer);
     let device_for_thread = Arc::clone(&device);
 
-    thread::spawn(move || {
+    let uhid_thread = thread::spawn(move || {
         if let Err(error) = device_for_thread.run_event_loop(|message| {
             let mut stream = lock_writer(&writer_for_uhid)?;
             write_message(&mut *stream, &message)
@@ -122,40 +214,60 @@ fn attach_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), Box<dyn Err
     });
 
     let mut reader_stream = stream;
-    reader_stream.set_nodelay(true)?;
+    reader_stream
+        .set_nodelay(true)
+        .map_err(|error| AttachFailure::Retryable(format!("failed to configure TCP stream: {error}")))?;
 
-    loop {
+    let outcome = loop {
         match read_message(&mut reader_stream) {
             Ok(Message::InputReport { data }) => {
-                device.send_input(&data)?;
+                if let Err(error) = device.send_input(&data) {
+                    break AttachFailure::Fatal(format!("failed to inject HID input into UHID: {error}"));
+                }
             }
             Ok(Message::GetReportResponse {
                 request_id,
                 status,
                 data,
             }) => {
-                device.reply_get_report(request_id, status, &data)?;
+                if let Err(error) = device.reply_get_report(request_id, status, &data) {
+                    break AttachFailure::Fatal(format!("failed to reply to UHID GET_REPORT: {error}"));
+                }
             }
             Ok(Message::SetReportResponse { request_id, status }) => {
-                device.reply_set_report(request_id, status)?;
+                if let Err(error) = device.reply_set_report(request_id, status) {
+                    break AttachFailure::Fatal(format!("failed to reply to UHID SET_REPORT: {error}"));
+                }
             }
             Ok(Message::Ping) => {
-                let mut stream = lock_writer(&writer)?;
-                write_message(&mut *stream, &Message::Pong)?;
+                let mut stream = match lock_writer(&writer) {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        break AttachFailure::Retryable(format!(
+                            "socket writer became unavailable: {error}"
+                        ));
+                    }
+                };
+                if let Err(error) = write_message(&mut *stream, &Message::Pong) {
+                    break AttachFailure::Retryable(format!("failed to respond to host ping: {error}"));
+                }
             }
             Ok(Message::Pong) => {}
             Ok(Message::Error { message }) => {
-                return Err(message.into());
+                break AttachFailure::Retryable(message);
             }
             Ok(other) => {
                 eprintln!("USBoss: ignoring unexpected message during attach: {other:?}");
             }
             Err(error) => {
-                let _ = device.destroy();
-                return Err(Box::new(error));
+                break AttachFailure::Retryable(format!("session ended: {error}"));
             }
         }
-    }
+    };
+
+    let _ = device.destroy();
+    let _ = uhid_thread.join();
+    Err(outcome)
 }
 
 fn connect_target(target: Target) -> Result<TcpStream, Box<dyn Error>> {
@@ -170,6 +282,11 @@ fn connect_target(target: Target) -> Result<TcpStream, Box<dyn Error>> {
 }
 
 fn print_devices(devices: &[DeviceSummary]) {
+    if devices.is_empty() {
+        println!("Available devices: none");
+        return;
+    }
+
     println!("Available devices:");
     for device in devices {
         println!("  {device}");
@@ -269,7 +386,7 @@ fn lock_writer(
         .map_err(|_| io::Error::new(io::ErrorKind::Other, "socket mutex poisoned"))
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Target {
     host: String,
     port: u16,
@@ -285,7 +402,13 @@ struct DiscoveredServer {
 enum Command {
     Discover { timeout_ms: u64 },
     List { host: Option<String> },
-    Attach { host: Option<String>, device_id: Option<u32> },
+    Attach {
+        host: Option<String>,
+        device_id: Option<u32>,
+        retry_ms: u64,
+        rescan_ms: u64,
+        once: bool,
+    },
 }
 
 impl Command {
@@ -306,6 +429,9 @@ impl Command {
             "attach" => Ok(Command::Attach {
                 host: parse_named_string(args, "--host"),
                 device_id: parse_named_u32(args, "--device-id"),
+                retry_ms: parse_named_u64(args, "--retry-ms").unwrap_or(1_500),
+                rescan_ms: parse_named_u64(args, "--rescan-ms").unwrap_or(1_000),
+                once: parse_flag(args, "--once"),
             }),
             "-h" | "--help" | "help" => {
                 print_help();
@@ -334,6 +460,10 @@ fn parse_named_u64(args: &[String], name: &str) -> Option<u64> {
     parse_named_string(args, name)?.parse().ok()
 }
 
+fn parse_flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|arg| arg == name)
+}
+
 fn print_help() {
     println!(
         "\
@@ -342,9 +472,166 @@ USBoss Linux client
 Commands:
   usboss-client discover [--timeout-ms 900]
   usboss-client list [--host 192.168.1.20]
-  usboss-client attach [--host 192.168.1.20] [--device-id 1]
+  usboss-client attach [--host 192.168.1.20] [--device-id 1] [--retry-ms 1500] [--rescan-ms 1000] [--once]
 
 If --host is omitted, attach/list will try UDP broadcast discovery on the local subnet.
+Attach mode stays connected, reconnects automatically, and waits for HID devices to appear unless --once is passed.
 "
     );
+}
+
+#[derive(Clone)]
+struct AttachConfig {
+    host: Option<String>,
+    requested_device_id: Option<u32>,
+    retry_delay: Duration,
+    rescan_delay: Duration,
+    once: bool,
+}
+
+struct DeviceMatcher {
+    vendor_id: u16,
+    product_id: u16,
+    interface_number: u8,
+    manufacturer: String,
+    product: String,
+    serial: Option<String>,
+}
+
+impl DeviceMatcher {
+    fn from_device(device: &DeviceSummary) -> Self {
+        Self {
+            vendor_id: device.vendor_id,
+            product_id: device.product_id,
+            interface_number: device.interface_number,
+            manufacturer: device.manufacturer.clone(),
+            product: device.product.clone(),
+            serial: if device.serial.is_empty() {
+                None
+            } else {
+                Some(device.serial.clone())
+            },
+        }
+    }
+
+    fn matches(&self, device: &DeviceSummary) -> bool {
+        if device.vendor_id != self.vendor_id
+            || device.product_id != self.product_id
+            || device.interface_number != self.interface_number
+        {
+            return false;
+        }
+        if let Some(serial) = &self.serial {
+            return device.serial == *serial;
+        }
+        device.manufacturer == self.manufacturer && device.product == self.product
+    }
+}
+
+#[derive(Debug)]
+enum AttachFailure {
+    Retryable(String),
+    Fatal(String),
+}
+
+impl fmt::Display for AttachFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AttachFailure::Retryable(message) | AttachFailure::Fatal(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl Error for AttachFailure {}
+
+fn classify_control_error(context: &str, error: &(dyn Error + 'static)) -> AttachFailure {
+    let message = format!("{context}: {error}");
+    if let Some(io_error) = error.downcast_ref::<io::Error>() {
+        match io_error.kind() {
+            io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::WouldBlock => return AttachFailure::Retryable(message),
+            _ => {}
+        }
+    }
+
+    if message.contains("unexpected") || message.contains("protocol version mismatch") {
+        AttachFailure::Fatal(message)
+    } else {
+        AttachFailure::Retryable(message)
+    }
+}
+
+fn select_device<'a>(
+    devices: &'a [DeviceSummary],
+    requested_device_id: Option<u32>,
+    preferred_matcher: Option<&DeviceMatcher>,
+) -> Option<&'a DeviceSummary> {
+    if let Some(device_id) = requested_device_id {
+        if let Some(device) = devices.iter().find(|device| device.device_id == device_id) {
+            return Some(device);
+        }
+    }
+
+    if let Some(matcher) = preferred_matcher {
+        if let Some(device) = devices.iter().find(|device| matcher.matches(device)) {
+            return Some(device);
+        }
+    }
+
+    if requested_device_id.is_some() {
+        None
+    } else {
+        devices.first()
+    }
+}
+
+fn waiting_message(
+    devices: &[DeviceSummary],
+    requested_device_id: Option<u32>,
+    preferred_matcher: Option<&DeviceMatcher>,
+) -> String {
+    match (devices.is_empty(), requested_device_id, preferred_matcher.is_some()) {
+        (true, _, _) => "host is online but no compatible USB HID interfaces are currently available".to_string(),
+        (false, Some(device_id), true) => format!(
+            "device id {device_id} is not currently advertised; waiting for the previously selected controller to return"
+        ),
+        (false, Some(device_id), false) => {
+            format!("device id {device_id} is not currently advertised by the host")
+        }
+        (false, None, true) => "waiting for the previously selected controller to return".to_string(),
+        (false, None, false) => "waiting for a compatible USB HID interface".to_string(),
+    }
+}
+
+fn device_snapshot(devices: &[DeviceSummary]) -> String {
+    devices
+        .iter()
+        .map(|device| {
+            format!(
+                "{}:{}:{}:{}:{}:{}:{}",
+                device.device_id,
+                device.vendor_id,
+                device.product_id,
+                device.interface_number,
+                device.manufacturer,
+                device.product,
+                device.system_path
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn announce_retry(message: &str, delay: Duration) {
+    eprintln!(
+        "USBoss: {message}. Retrying in {} ms.",
+        delay.as_millis()
+    );
+    thread::sleep(delay);
 }
