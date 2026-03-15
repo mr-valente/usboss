@@ -214,7 +214,7 @@ fn discover_servers(timeout: Duration) -> Result<Vec<DiscoveredServer>, Box<dyn 
         SocketAddr::from(([255, 255, 255, 255], DEFAULT_DISCOVERY_PORT)),
     )?;
 
-    let mut servers = Vec::new();
+    let mut servers: Vec<DiscoveredServer> = Vec::new();
     let started = Instant::now();
     let mut buffer = [0u8; 512];
     while started.elapsed() < timeout {
