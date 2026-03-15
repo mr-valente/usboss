@@ -1,0 +1,8 @@
+.git
+.idea
+*.iml
+build-artifacts
+.docker-cache
+android-host/.gradle
+android-host/app/build
+linux-client/target

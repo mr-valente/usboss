@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">USBoss</string>
+    <string name="notification_channel_name">USBoss Host</string>
+    <string name="notification_text">Forwarding USB HID devices to Linux</string>
+</resources>

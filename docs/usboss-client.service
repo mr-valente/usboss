@@ -1,0 +1,15 @@
+[Unit]
+Description=USBoss Linux client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/usboss/linux-client
+ExecStart=/opt/usboss/linux-client/target/release/usboss-client attach --host 192.168.1.50:35355
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
