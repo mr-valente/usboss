@@ -22,16 +22,23 @@ object UsbDeviceCatalog {
 
     fun enumerate(context: Context): List<UsbCandidate> {
         val usbManager = context.getSystemService(UsbManager::class.java)
-        val devices = mutableListOf<UsbCandidate>()
-        usbManager.deviceList.values.forEachIndexed { deviceIndex, device ->
-            devices += buildCandidatesForDevice(usbManager, device, deviceIndex)
-        }
-        return devices.sortedWith(
+        val devices = usbManager.deviceList.values
+            .sortedBy { it.deviceName }
+            .flatMap { device ->
+                buildCandidatesForDevice(usbManager, device)
+            }
+            .sortedWith(
             compareByDescending<UsbCandidate> {
                 if (it.transport == Protocol.TRANSPORT_XINPUT_360) 1 else 0
             }
-                .thenBy { it.id },
+                .thenBy { it.deviceName }
+                .thenBy { it.interfaceNumber }
+                .thenBy { it.vendorId }
+                .thenBy { it.productId },
         )
+        return devices.mapIndexed { index, candidate ->
+            candidate.copy(id = index + 1)
+        }
     }
 
     fun requestPermissions(context: Context, devices: List<UsbCandidate>, action: String) {
@@ -44,6 +51,7 @@ object UsbDeviceCatalog {
         )
         devices
             .filterNot { it.hasPermission }
+            .distinctBy { it.deviceName }
             .forEach { candidate ->
                 usbManager.deviceList[candidate.deviceName]?.let { device ->
                     usbManager.requestPermission(device, permissionIntent)
@@ -118,7 +126,6 @@ object UsbDeviceCatalog {
     private fun buildCandidatesForDevice(
         usbManager: UsbManager,
         device: UsbDevice,
-        deviceIndex: Int,
     ): List<UsbCandidate> {
         return (0 until device.interfaceCount)
             .map(device::getInterface)
@@ -131,7 +138,7 @@ object UsbDeviceCatalog {
                 val input = usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_IN)
                 val output = usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_OUT)
                 UsbCandidate(
-                    id = (deviceIndex * 10) + interfaceOffset + 1,
+                    id = interfaceOffset + 1,
                     deviceName = device.deviceName,
                     transport = transport,
                     vendorId = device.vendorId,

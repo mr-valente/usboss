@@ -101,8 +101,24 @@ class OpenedXInputDevice(
         if (data.isEmpty()) {
             return 0
         }
-        val written = connection.bulkTransfer(endpoint, data, data.size, 100)
-        return if (written >= 0) 0 else 5
+        val request = UsbRequest()
+        return try {
+            if (!request.initialize(connection, endpoint)) {
+                return 5
+            }
+            val buffer = ByteBuffer.allocateDirect(data.size)
+            buffer.put(data)
+            buffer.flip()
+            if (!request.queue(buffer)) {
+                return 5
+            }
+            val completed = connection.requestWait(250)
+            if (completed == request) 0 else 5
+        } catch (_: Throwable) {
+            5
+        } finally {
+            request.close()
+        }
     }
 
     override fun getReport(reportType: Int, reportId: Int): ByteArray {

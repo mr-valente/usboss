@@ -156,6 +156,13 @@ sudo linux-client/target/release/usboss-client list --host SHIELD_IP:35355
 sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --device-id 1
 ```
 
+For multiple simultaneous controllers, run one `attach` process per controller and pin each one to a different `--device-id`:
+
+```bash
+sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --device-id 1
+sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --device-id 2
+```
+
 `attach` is now a persistent runtime command:
 
 - if the host is offline, it keeps retrying
@@ -179,6 +186,12 @@ These states are now treated as normal:
 - restart either side and let `attach` settle back into a healthy connection
 
 For your use case, the intended steady state is simply to leave the Android host service running and leave `usboss-client attach` running on Linux.
+
+For two local players, the intended steady state is:
+
+- two dongles plugged into the Android host
+- two `usboss-client attach --device-id ...` processes running on Linux
+- one virtual controller created per process
 
 ## Avoid duplicate input with Moonlight/Sunshine
 

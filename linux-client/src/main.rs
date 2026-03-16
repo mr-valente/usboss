@@ -149,14 +149,15 @@ fn attach_session(
             last_snapshot = Some(snapshot);
         }
 
-        let selected = match select_device(
-            &devices,
-            config.requested_device_id,
-            preferred_matcher.as_ref(),
-        ) {
+        let preferred = select_device(&devices, config.requested_device_id, preferred_matcher.as_ref());
+        let open_candidates: Vec<DeviceSummary> = match preferred {
             Some(device) => {
                 last_waiting_message.clear();
-                device.clone()
+                vec![device.clone()]
+            }
+            None if config.requested_device_id.is_none() && preferred_matcher.is_none() && !devices.is_empty() => {
+                last_waiting_message.clear();
+                devices.to_vec()
             }
             None => {
                 let message = waiting_message(&devices, config.requested_device_id, preferred_matcher.as_ref());
@@ -172,24 +173,46 @@ fn attach_session(
             }
         };
 
-        let matcher = DeviceMatcher::from_device(&selected);
-        println!("Attaching to {selected}");
+        let mut deferred_error: Option<String> = None;
+        for selected in open_candidates {
+            let matcher = DeviceMatcher::from_device(&selected);
+            println!("Attaching to {selected}");
 
-        let spec = match open_device(&mut stream, selected.device_id) {
-            Ok(spec) => spec,
-            Err(error) => {
-                let message = format!("failed to open {selected}: {error}");
-                if config.once {
-                    return Err(AttachFailure::Retryable(message));
+            match open_device(&mut stream, selected.device_id) {
+                Ok(spec) => {
+                    *preferred_matcher = Some(matcher);
+                    return attach_loop(stream, spec);
                 }
-                eprintln!("USBoss: {message}");
-                thread::sleep(config.rescan_delay);
-                continue;
+                Err(error) => {
+                    let message = format!("failed to open {selected}: {error}");
+                    if can_try_next_device(
+                        &error.to_string(),
+                        config.requested_device_id,
+                        preferred_matcher.as_ref(),
+                    ) {
+                        eprintln!("USBoss: {message}");
+                        deferred_error = Some(message);
+                        continue;
+                    }
+                    if config.once {
+                        return Err(AttachFailure::Retryable(message));
+                    }
+                    eprintln!("USBoss: {message}");
+                    deferred_error = Some(message);
+                    break;
+                }
             }
-        };
+        }
 
-        *preferred_matcher = Some(matcher);
-        return attach_loop(stream, spec);
+        if config.once {
+            return Err(AttachFailure::Retryable(
+                deferred_error.unwrap_or_else(|| "no controller could be opened".to_string()),
+            ));
+        }
+        if let Some(message) = &deferred_error {
+            eprintln!("USBoss: {message}");
+        }
+        thread::sleep(config.rescan_delay);
     }
 }
 
@@ -523,6 +546,7 @@ Commands:
 
 If --host is omitted, attach/list will try UDP broadcast discovery on the local subnet.
 Attach mode stays connected, reconnects automatically, and waits for controller devices to appear unless --once is passed.
+For multiple controllers, run one attach process per device id shown by `usboss-client list`.
 "
     );
 }
@@ -541,6 +565,7 @@ struct DeviceMatcher {
     vendor_id: u16,
     product_id: u16,
     interface_number: u8,
+    system_path: String,
     manufacturer: String,
     product: String,
     serial: Option<String>,
@@ -553,6 +578,7 @@ impl DeviceMatcher {
             vendor_id: device.vendor_id,
             product_id: device.product_id,
             interface_number: device.interface_number,
+            system_path: device.system_path.clone(),
             manufacturer: device.manufacturer.clone(),
             product: device.product.clone(),
             serial: if device.serial.is_empty() {
@@ -563,18 +589,25 @@ impl DeviceMatcher {
         }
     }
 
-    fn matches(&self, device: &DeviceSummary) -> bool {
-        if device.transport != self.transport
-            || device.vendor_id != self.vendor_id
-            || device.product_id != self.product_id
-            || device.interface_number != self.interface_number
-        {
+    fn matches_exact_path(&self, device: &DeviceSummary) -> bool {
+        self.matches_base(device) && device.system_path == self.system_path
+    }
+
+    fn matches_identity(&self, device: &DeviceSummary) -> bool {
+        if !self.matches_base(device) {
             return false;
         }
         if let Some(serial) = &self.serial {
             return device.serial == *serial;
         }
         device.manufacturer == self.manufacturer && device.product == self.product
+    }
+
+    fn matches_base(&self, device: &DeviceSummary) -> bool {
+        device.transport == self.transport
+            && device.vendor_id == self.vendor_id
+            && device.product_id == self.product_id
+            && device.interface_number == self.interface_number
     }
 }
 
@@ -629,7 +662,10 @@ fn select_device<'a>(
     }
 
     if let Some(matcher) = preferred_matcher {
-        if let Some(device) = devices.iter().find(|device| matcher.matches(device)) {
+        if let Some(device) = devices.iter().find(|device| matcher.matches_exact_path(device)) {
+            return Some(device);
+        }
+        if let Some(device) = devices.iter().find(|device| matcher.matches_identity(device)) {
             return Some(device);
         }
     }
@@ -685,4 +721,14 @@ fn announce_retry(message: &str, delay: Duration) {
         delay.as_millis()
     );
     thread::sleep(delay);
+}
+
+fn can_try_next_device(
+    error_message: &str,
+    requested_device_id: Option<u32>,
+    preferred_matcher: Option<&DeviceMatcher>,
+) -> bool {
+    requested_device_id.is_none()
+        && preferred_matcher.is_none()
+        && error_message.contains("already being forwarded by another client")
 }

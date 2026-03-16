@@ -268,9 +268,9 @@ fn parse_xinput360_report(data: &[u8]) -> Option<XInput360State> {
         lt: data[4] as i32,
         rt: data[5] as i32,
         lx: read_i16(data, 6) as i32,
-        ly: (!read_i16(data, 8)) as i32,
+        ly: invert_axis(read_i16(data, 8)),
         rx: read_i16(data, 10) as i32,
-        ry: (!read_i16(data, 12)) as i32,
+        ry: invert_axis(read_i16(data, 12)),
     })
 }
 
@@ -292,6 +292,14 @@ fn pressed(byte: u8, mask: u8) -> i32 {
 
 fn read_i16(data: &[u8], offset: usize) -> i16 {
     i16::from_le_bytes([data[offset], data[offset + 1]])
+}
+
+fn invert_axis(value: i16) -> i32 {
+    if value == i16::MIN {
+        i16::MAX as i32
+    } else {
+        -(value as i32)
+    }
 }
 
 fn ioctl_int(fd: i32, request: libc::c_ulong, value: i32) -> io::Result<()> {

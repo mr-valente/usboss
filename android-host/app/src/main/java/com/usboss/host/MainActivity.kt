@@ -91,7 +91,7 @@ private fun UsbBossScreen(
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "Android USB host to Linux HID bridge",
+                    text = "Android USB host to Linux controller bridge",
                     color = Color(0xFFE8E8E8),
                     style = MaterialTheme.typography.titleMedium,
                 )
@@ -208,11 +208,15 @@ private fun SummaryCard(state: HostUiState) {
             Text("Discovery UDP port: ${state.discoveryPort}", color = Color(0xFFD5D9E0))
             Text("TCP stream port: ${state.tcpPort}", color = Color(0xFFD5D9E0))
             Text(
-                "Connected client: ${state.connectedClient ?: "none"}",
+                "Connected client(s): ${state.connectedClient ?: "none"}",
                 color = Color(0xFFD5D9E0),
             )
             Text(
                 "Attach mode on Linux will keep retrying and reconnect automatically.",
+                color = Color(0xFF9FA7B5),
+            )
+            Text(
+                "For multiple controllers, run one Linux attach process per device id from `usboss-client list`.",
                 color = Color(0xFF9FA7B5),
             )
         }

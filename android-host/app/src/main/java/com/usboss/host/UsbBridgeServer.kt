@@ -34,10 +34,9 @@ class UsbBridgeServer(
     private var serverSocket: ServerSocket? = null
     private var discoveryJob: Job? = null
     private var acceptJob: Job? = null
-    @Volatile
-    private var activeClientSocket: Socket? = null
-    @Volatile
-    private var activeDeviceSystemPath: String? = null
+    private val sessionLock = Any()
+    private var nextSessionId = 1L
+    private val sessions = mutableMapOf<Long, ClientSession>()
 
     fun start() {
         stopping = false
@@ -69,8 +68,10 @@ class UsbBridgeServer(
         stopping = true
         discoverySocket?.close()
         serverSocket?.close()
-        activeClientSocket?.close()
-        activeDeviceSystemPath = null
+        snapshotSessions().forEach { session ->
+            runCatching { session.socket.close() }
+        }
+        clearSessions()
         ioScope.launch {
             discoveryJob?.cancelAndJoin()
             acceptJob?.cancelAndJoin()
@@ -79,13 +80,22 @@ class UsbBridgeServer(
     }
 
     fun onAvailableDevicesChanged(availablePaths: Set<String>) {
-        val activePath = activeDeviceSystemPath ?: return
-        if (activePath in availablePaths) {
+        val affectedSessions = synchronized(sessionLock) {
+            sessions.values
+                .filter { session ->
+                    val activePath = session.activeDeviceSystemPath
+                    activePath != null && activePath !in availablePaths
+                }
+                .toList()
+        }
+        if (affectedSessions.isEmpty()) {
             return
         }
-        onStatus("Active USB device disconnected; waiting for it to return")
-        onError("The currently forwarded USB device was unplugged.")
-        runCatching { activeClientSocket?.close() }
+        onStatus("One or more active USB devices disconnected; waiting for them to return")
+        onError("A currently forwarded USB device was unplugged.")
+        affectedSessions.forEach { session ->
+            runCatching { session.socket.close() }
+        }
     }
 
     private suspend fun runAcceptLoop() {
@@ -101,23 +111,23 @@ class UsbBridgeServer(
                 null
             } ?: break
 
-            activeClientSocket = socket
-            try {
-                handleClient(socket)
-            } catch (error: Throwable) {
-                onError(error.message ?: "Client session failed")
-                onStatus("Client disconnected")
-            } finally {
-                runCatching { socket.close() }
-                activeClientSocket = null
-                onClientChanged(null)
+            val sessionId = registerSession(socket)
+            ioScope.launch {
+                try {
+                    handleClient(sessionId, socket)
+                } catch (error: Throwable) {
+                    onError(error.message ?: "Client session failed")
+                    onStatus("Client disconnected")
+                } finally {
+                    runCatching { socket.close() }
+                    removeSession(sessionId)
+                }
             }
         }
     }
 
-    private suspend fun handleClient(socket: Socket) {
+    private suspend fun handleClient(sessionId: Long, socket: Socket) {
         socket.tcpNoDelay = true
-        onClientChanged(socket.inetAddress.hostAddress)
         onStatus("Client connected: ${socket.inetAddress.hostAddress}")
 
         val input = BufferedInputStream(socket.getInputStream())
@@ -148,7 +158,7 @@ class UsbBridgeServer(
                     is Protocol.Message.OpenDevice -> {
                         inputPump?.cancelAndJoin()
                         openedDevice?.close()
-                        activeDeviceSystemPath = null
+                        releaseDevice(sessionId)
                         openedDevice = null
 
                         val deviceResult = runCatching {
@@ -170,8 +180,15 @@ class UsbBridgeServer(
                             continue@session
                         }
                         val device = deviceResult.getOrThrow()
+                        if (!tryReserveDevice(sessionId, device.systemPath)) {
+                            device.close()
+                            val errorMessage = "USB device is already being forwarded by another client"
+                            writerMutex.withLock {
+                                Protocol.write(output, Protocol.Message.Error(errorMessage))
+                            }
+                            continue@session
+                        }
                         openedDevice = device
-                        activeDeviceSystemPath = device.systemPath
                         val spec = device.protocolSpec()
 
                         writerMutex.withLock {
@@ -298,7 +315,7 @@ class UsbBridgeServer(
         } finally {
             inputPump?.cancelAndJoin()
             openedDevice?.close()
-            activeDeviceSystemPath = null
+            releaseDevice(sessionId)
         }
     }
 
@@ -341,7 +358,86 @@ class UsbBridgeServer(
         return "USBoss on $model"
     }
 
+    private fun registerSession(socket: Socket): Long {
+        val sessionId = synchronized(sessionLock) {
+            val id = nextSessionId++
+            sessions[id] = ClientSession(
+                socket = socket,
+                clientLabel = socket.inetAddress.hostAddress.orEmpty(),
+            )
+            id
+        }
+        updateConnectedClientSummary()
+        return sessionId
+    }
+
+    private fun removeSession(sessionId: Long) {
+        synchronized(sessionLock) {
+            sessions.remove(sessionId)
+        }
+        updateConnectedClientSummary()
+    }
+
+    private fun tryReserveDevice(sessionId: Long, systemPath: String): Boolean {
+        val reserved = synchronized(sessionLock) {
+            val alreadyInUse = sessions.any { (id, session) ->
+                id != sessionId && session.activeDeviceSystemPath == systemPath
+            }
+            if (alreadyInUse) {
+                false
+            } else {
+                sessions[sessionId]?.activeDeviceSystemPath = systemPath
+                true
+            }
+        }
+        updateConnectedClientSummary()
+        return reserved
+    }
+
+    private fun releaseDevice(sessionId: Long) {
+        synchronized(sessionLock) {
+            sessions[sessionId]?.activeDeviceSystemPath = null
+        }
+        updateConnectedClientSummary()
+    }
+
+    private fun updateConnectedClientSummary() {
+        val summary = synchronized(sessionLock) {
+            when (val activeSessions = sessions.size) {
+                0 -> null
+                1 -> sessions.values.first().clientLabel
+                else -> {
+                    val labels = sessions.values.map { it.clientLabel }.distinct()
+                    if (labels.size == 1) {
+                        "${labels.first()} ($activeSessions sessions)"
+                    } else {
+                        "$activeSessions clients"
+                    }
+                }
+            }
+        }
+        onClientChanged(summary)
+    }
+
+    private fun snapshotSessions(): List<ClientSession> {
+        return synchronized(sessionLock) {
+            sessions.values.toList()
+        }
+    }
+
+    private fun clearSessions() {
+        synchronized(sessionLock) {
+            sessions.clear()
+        }
+    }
+
     companion object {
         private const val TAG = "USBoss"
     }
+
+    private data class ClientSession(
+        val socket: Socket,
+        val clientLabel: String,
+        var activeDeviceSystemPath: String? = null,
+    )
 }
