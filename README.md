@@ -30,6 +30,7 @@ Current XInput scope:
 - [linux-client](/Users/nick.valente/.dev/usboss/linux-client): Rust client that creates a virtual HID or XInput-style device on Linux.
 - [docs/PROTOCOL.md](/Users/nick.valente/.dev/usboss/docs/PROTOCOL.md): Wire format notes.
 - [docs/BUILD_WITH_DOCKER.md](/Users/nick.valente/.dev/usboss/docs/BUILD_WITH_DOCKER.md): Containerized build instructions.
+- [docs/RELEASING.md](/Users/nick.valente/.dev/usboss/docs/RELEASING.md): Docker-based GitHub release flow.
 - [docs/99-usboss-uhid.rules](/Users/nick.valente/.dev/usboss/docs/99-usboss-uhid.rules): Optional udev rule for `/dev/uhid` and `/dev/uinput`.
 - [docs/usboss-client.service](/Users/nick.valente/.dev/usboss/docs/usboss-client.service): Optional systemd service template.
 

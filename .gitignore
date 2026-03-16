@@ -2,6 +2,7 @@ android-host/.gradle/
 android-host/app/build/
 linux-client/target/
 build-artifacts/
+release-assets/
 .docker-cache/
 *.iml
 .idea/
