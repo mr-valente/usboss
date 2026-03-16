@@ -65,14 +65,14 @@ class OpenedHidDevice(
         }
 
         val packetSize = inputEndpoint.maxPacketSize.coerceAtLeast(8)
-        val buffer = ByteBuffer.allocateDirect(packetSize)
+        val buffer = ByteBuffer.allocate(packetSize)
         var reportCount = 0
         var zeroLengthCompletions = 0
 
         try {
             while (isActive && !closed.get()) {
                 buffer.clear()
-                if (!queueInterruptRequest(request, buffer, packetSize)) {
+                if (!request.queue(buffer)) {
                     throw IOException("Failed to queue USB interrupt read")
                 }
 
@@ -191,13 +191,6 @@ class OpenedHidDevice(
         Protocol.REPORT_TYPE_FEATURE -> 3
         else -> 3
     }
-
-    @Suppress("DEPRECATION")
-    private fun queueInterruptRequest(
-        request: UsbRequest,
-        buffer: ByteBuffer,
-        length: Int,
-    ): Boolean = request.queue(buffer, length)
 
     private fun shouldLogReport(reportCount: Int): Boolean {
         return reportCount <= HID_REPORT_LOG_LIMIT || reportCount % 100 == 0
