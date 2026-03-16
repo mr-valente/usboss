@@ -56,6 +56,7 @@ class OpenedHidDevice(
         onReport: (ByteArray) -> Unit,
         onError: (Throwable) -> Unit,
     ): Job = scope.launch(Dispatchers.IO) {
+        HostRuntime.debug("Starting HID input pump for ${candidate.systemPath}")
         val request = UsbRequest()
         if (!request.initialize(connection, inputEndpoint)) {
             onError(IOException("Failed to initialize interrupt reader"))
@@ -88,9 +89,11 @@ class OpenedHidDevice(
             }
         } catch (error: Throwable) {
             if (!closed.get()) {
+                HostRuntime.logError("HID input pump failed for ${candidate.systemPath}", error)
                 onError(error)
             }
         } finally {
+            HostRuntime.debug("Stopping HID input pump for ${candidate.systemPath}")
             request.close()
         }
     }
@@ -103,6 +106,9 @@ class OpenedHidDevice(
         if (outputEndpoint != null && data.isNotEmpty()) {
             val written = connection.bulkTransfer(outputEndpoint, data, data.size, 50)
             if (written >= 0) {
+                HostRuntime.debug(
+                    "Sent HID interrupt OUT report for ${candidate.systemPath}: type=$reportType id=$reportId size=${data.size}",
+                )
                 return 0
             }
         }
@@ -143,6 +149,9 @@ class OpenedHidDevice(
             data,
             data.size,
             1_000,
+        )
+        HostRuntime.debug(
+            "Sent HID control SET_REPORT for ${candidate.systemPath}: type=$reportType id=$reportId size=${data.size} result=$result",
         )
         return if (result >= 0) 0 else 5
     }

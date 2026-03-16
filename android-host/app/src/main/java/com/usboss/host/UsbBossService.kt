@@ -21,6 +21,7 @@ class UsbBossService : Service() {
     override fun onCreate() {
         super.onCreate()
         try {
+            HostRuntime.initialize(this)
             createNotificationChannel()
 
             val filter = IntentFilter().apply {
@@ -34,6 +35,7 @@ class UsbBossService : Service() {
                 filter,
                 ContextCompat.RECEIVER_NOT_EXPORTED,
             )
+            HostRuntime.note("Foreground service created and USB receivers registered")
         } catch (error: Throwable) {
             Log.e(TAG, "Service initialization failed", error)
             HostRuntime.updateError("USBoss service init failed: ${error.message}")
@@ -43,6 +45,7 @@ class UsbBossService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return try {
+            HostRuntime.debug("Service action received: ${intent?.action ?: "null"}")
             when (intent?.action) {
                 ACTION_STOP -> {
                     HostRuntime.stop()
@@ -74,6 +77,7 @@ class UsbBossService : Service() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(receiver) }
+        HostRuntime.note("Foreground service destroyed", addToRecent = true)
         HostRuntime.stop()
         super.onDestroy()
     }

@@ -3,6 +3,7 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::logging::debug;
 use crate::protocol::{Message, OpenDeviceAck};
 
 const UHID_DATA_MAX: usize = 4096;
@@ -56,6 +57,11 @@ impl UhidDevice {
             reader: Arc::new(Mutex::new(file)),
             shutting_down: Arc::new(AtomicBool::new(false)),
         };
+        debug(&format!(
+            "Opened /dev/uhid for {} (descriptor={} bytes)",
+            spec.name,
+            spec.report_descriptor.len()
+        ));
         device.write_create2(spec)?;
         Ok(device)
     }
@@ -125,19 +131,19 @@ impl UhidDevice {
             match read_u32(&buffer, 0) {
                 UHID_START => {
                     let dev_flags = read_u64(&buffer, 4);
-                    eprintln!("USBoss: UHID device started (flags=0x{dev_flags:x})");
+                    debug(&format!("UHID device started (flags=0x{dev_flags:x})"));
                 }
                 UHID_STOP => {
-                    eprintln!("USBoss: UHID device stopped");
+                    debug("UHID device stopped");
                     if self.shutting_down.load(Ordering::SeqCst) {
                         return Ok(());
                     }
                 }
                 UHID_OPEN => {
-                    eprintln!("USBoss: Linux opened the virtual HID device");
+                    debug("Linux opened the virtual HID device");
                 }
                 UHID_CLOSE => {
-                    eprintln!("USBoss: Linux closed the virtual HID device");
+                    debug("Linux closed the virtual HID device");
                     if self.shutting_down.load(Ordering::SeqCst) {
                         return Ok(());
                     }
@@ -185,7 +191,7 @@ impl UhidDevice {
                     })?;
                 }
                 other => {
-                    eprintln!("USBoss: ignoring UHID event type {other}");
+                    debug(&format!("Ignoring UHID event type {other}"));
                 }
             }
         }

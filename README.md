@@ -140,23 +140,42 @@ Auto-discover:
 
 ```bash
 sudo linux-client/target/release/usboss-client discover
-sudo linux-client/target/release/usboss-client attach
+sudo linux-client/target/release/usboss-client attach-all
 ```
 
 Direct host:
 
 ```bash
-sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355
+sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355
 ```
 
-If multiple controller interfaces are advertised, list them first:
+For one or more controllers, the smoother option is now:
+
+```bash
+sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355
+```
+
+`attach-all` runs a local supervisor that keeps one managed attachment loop per advertised controller slot. That means:
+
+- one Linux command for single-player or multiplayer
+- automatic recovery when the Shield host restarts
+- automatic recovery when a controller is unplugged and later replugged
+- no need to manually launch one Linux process per controller in the common case
+
+When you are debugging hardware behavior, add `--verbose`:
+
+```bash
+sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355 --verbose
+```
+
+If you want manual control over a specific controller, list the interfaces first:
 
 ```bash
 sudo linux-client/target/release/usboss-client list --host SHIELD_IP:35355
 sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --device-id 1
 ```
 
-For multiple simultaneous controllers, run one `attach` process per controller and pin each one to a different `--device-id`:
+Manual per-controller pinning is still available if you prefer it:
 
 ```bash
 sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --device-id 1
@@ -185,13 +204,13 @@ These states are now treated as normal:
 - unplug and replug the controller while the host is already running
 - restart either side and let `attach` settle back into a healthy connection
 
-For your use case, the intended steady state is simply to leave the Android host service running and leave `usboss-client attach` running on Linux.
+For your use case, the intended steady state is simply to leave the Android host service running and leave `usboss-client attach-all` running on Linux.
 
 For two local players, the intended steady state is:
 
 - two dongles plugged into the Android host
-- two `usboss-client attach --device-id ...` processes running on Linux
-- one virtual controller created per process
+- one `usboss-client attach-all` process running on Linux
+- one virtual controller created per forwarded controller slot
 
 ## Avoid duplicate input with Moonlight/Sunshine
 
@@ -213,7 +232,7 @@ The right toggle depends on your current Moonlight/Sunshine config, but the symp
 3. Run:
 
 ```bash
-sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355
+sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355
 ```
 
 4. In another Linux shell, verify that a new input device exists:
@@ -244,7 +263,7 @@ Press buttons on the 8BitDo controller and confirm events show up on Linux.
 
 ### Hotplug test
 
-1. Leave `usboss-client attach` running.
+1. Leave `usboss-client attach-all` running.
 2. Unplug the controller or dongle from the Android host.
 3. Confirm the Linux client drops back to a waiting/retrying state instead of exiting.
 4. Plug the controller or dongle back in.
@@ -252,18 +271,47 @@ Press buttons on the 8BitDo controller and confirm events show up on Linux.
 
 ### In-game test with Sunshine
 
-1. Keep `usboss-client` attached on the Linux machine.
+1. Keep `usboss-client attach-all` attached on the Linux machine.
 2. Start Sunshine as usual.
 3. Launch a game locally on Linux or through Sunshine.
 4. Confirm the game sees the virtual controller.
 5. If input is doubled, adjust Moonlight/Sunshine gamepad forwarding as noted above.
+
+## Debugging
+
+For real hardware testing, turn on verbose logging in the Android app. The app now keeps a rolling in-app event log and also writes detailed `USBoss` entries to logcat.
+
+Linux side:
+
+```bash
+sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355 --verbose
+```
+
+Android side:
+
+- open `USBoss`
+- tap `Verbose: Off` so it changes to `Verbose: On`
+- watch the `Recent Events` panel in the app
+- or capture full logs with:
+
+```bash
+adb logcat -s USBoss
+```
+
+This combination should tell you:
+
+- whether the Shield enumerated the dongle as `HID` or `XInput 360`
+- whether USB permission was requested and granted
+- whether Linux connected and requested a device
+- whether the Android host successfully opened and claimed the USB interface
+- whether the input pump or output-report path failed
 
 ## Permissions for `/dev/uhid` and `/dev/uinput`
 
 Quickest path:
 
 ```bash
-sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355
+sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355
 ```
 
 If you want to run without `sudo`, install the udev rule from [docs/99-usboss-uhid.rules](/Users/nick.valente/.dev/usboss/docs/99-usboss-uhid.rules).
@@ -275,6 +323,7 @@ If you want to run without `sudo`, install the udev rule from [docs/99-usboss-uh
 - Xbox One / GIP style devices are not currently implemented.
 - Output reports are best-effort. Basic input is the main focus of this first cut.
 - The Linux virtual XInput backend currently focuses on input. Rumble is not implemented there yet.
+- For multiple identical controllers with no unique serial number, `attach-all` keeps them in separate managed slots, but a full unplug/replug can still swap which physical controller lands in which slot.
 - I could not compile this locally because the current environment did not have Android or Rust toolchains installed.
 
 ## Suggested next improvements

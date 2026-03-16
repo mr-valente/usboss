@@ -53,6 +53,7 @@ object UsbDeviceCatalog {
             .filterNot { it.hasPermission }
             .distinctBy { it.deviceName }
             .forEach { candidate ->
+                HostRuntime.debug("Requesting permission for ${candidate.displayName} at ${candidate.systemPath}")
                 usbManager.deviceList[candidate.deviceName]?.let { device ->
                     usbManager.requestPermission(device, permissionIntent)
                 }
@@ -78,6 +79,10 @@ object UsbDeviceCatalog {
             connection.close()
             throw IOException("Failed to claim controller interface ${candidate.interfaceNumber}")
         }
+        HostRuntime.note(
+            "Opening ${candidate.displayName} (${candidate.transportLabel}) on ${candidate.systemPath}",
+            addToRecent = true,
+        )
 
         val inputEndpoint = usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_IN)
             ?: run {
@@ -87,6 +92,9 @@ object UsbDeviceCatalog {
             }
         return try {
             val outputEndpoint = usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_OUT)
+            HostRuntime.debug(
+                "Claimed ${candidate.systemPath}: input=${inputEndpoint.maxPacketSize} output=${outputEndpoint?.maxPacketSize ?: 0}",
+            )
             when (candidate.transport) {
                 Protocol.TRANSPORT_XINPUT_360 -> {
                     OpenedXInputDevice(
@@ -119,6 +127,7 @@ object UsbDeviceCatalog {
         } catch (error: Throwable) {
             connection.releaseInterface(usbInterface)
             connection.close()
+            HostRuntime.logError("Failed while opening ${candidate.displayName}", error)
             throw error
         }
     }

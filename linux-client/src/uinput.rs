@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use libc::{c_int, timeval};
 
+use crate::logging::debug;
 use crate::protocol::OpenDeviceAck;
 
 const UINPUT_MAX_NAME_SIZE: usize = 80;
@@ -106,6 +107,13 @@ impl XInput360Device {
     pub fn create(spec: &OpenDeviceAck) -> io::Result<Self> {
         let mut file = open_uinput()?;
         let fd = file.as_raw_fd();
+        debug(&format!(
+            "Opened uinput for {} transport={} input={} output={}",
+            spec.name,
+            spec.transport.label(),
+            spec.input_packet_size,
+            spec.output_packet_size
+        ));
 
         ioctl_int(fd, UI_SET_EVBIT, EV_KEY as i32)?;
         ioctl_int(fd, UI_SET_EVBIT, EV_ABS as i32)?;
@@ -166,7 +174,10 @@ impl XInput360Device {
     pub fn send_input_report(&mut self, data: &[u8]) -> io::Result<()> {
         let state = match parse_xinput360_report(data) {
             Some(state) => state,
-            None => return Ok(()),
+            None => {
+                debug(&format!("Ignoring short XInput report ({} bytes)", data.len()));
+                return Ok(());
+            }
         };
 
         self.emit_key(BTN_START, state.start)?;
@@ -193,6 +204,7 @@ impl XInput360Device {
     }
 
     pub fn destroy(&self) -> io::Result<()> {
+        debug("Destroying virtual XInput device");
         ioctl_none(self.file.as_raw_fd(), UI_DEV_DESTROY)
     }
 

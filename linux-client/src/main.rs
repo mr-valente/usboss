@@ -1,7 +1,9 @@
+mod logging;
 mod protocol;
 mod uhid;
 mod uinput;
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::error::Error;
 use std::fmt;
@@ -11,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use logging::{debug, is_verbose, set_verbose};
 use protocol::{
     read_message, write_message, DeviceSummary, DeviceTransport, Message, OpenDeviceAck,
     DEFAULT_DISCOVERY_PORT, DEFAULT_TCP_PORT, DISCOVERY_REQUEST, DISCOVERY_RESPONSE_PREFIX,
@@ -26,7 +29,12 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let raw_args: Vec<String> = env::args().skip(1).collect();
+    let (verbose, args) = extract_global_flags(raw_args);
+    set_verbose(verbose);
+    if verbose {
+        debug("Verbose logging enabled");
+    }
     let command = Command::parse(&args)?;
 
     match command {
@@ -59,6 +67,23 @@ fn run() -> Result<(), Box<dyn Error>> {
                 retry_delay: Duration::from_millis(retry_ms),
                 rescan_delay: Duration::from_millis(rescan_ms),
                 once,
+                preferred_matcher: None,
+                preferred_slot: 0,
+            })?;
+        }
+        Command::AttachAll {
+            host,
+            retry_ms,
+            rescan_ms,
+        } => {
+            run_attach_all(AttachConfig {
+                host,
+                requested_device_id: None,
+                retry_delay: Duration::from_millis(retry_ms),
+                rescan_delay: Duration::from_millis(rescan_ms),
+                once: false,
+                preferred_matcher: None,
+                preferred_slot: 0,
             })?;
         }
     }
@@ -67,6 +92,14 @@ fn run() -> Result<(), Box<dyn Error>> {
 }
 
 fn hello(stream: &mut TcpStream) -> Result<(), Box<dyn Error>> {
+    hello_with_logging(stream, true)
+}
+
+fn hello_quiet(stream: &mut TcpStream) -> Result<(), Box<dyn Error>> {
+    hello_with_logging(stream, false)
+}
+
+fn hello_with_logging(stream: &mut TcpStream, log_connection: bool) -> Result<(), Box<dyn Error>> {
     write_message(
         stream,
         &Message::Hello {
@@ -75,7 +108,10 @@ fn hello(stream: &mut TcpStream) -> Result<(), Box<dyn Error>> {
     )?;
     match read_message(stream)? {
         Message::HelloAck { server_name } => {
-            println!("Connected to {server_name}");
+            debug(&format!("Handshake completed with {server_name}"));
+            if log_connection {
+                println!("Connected to {server_name}");
+            }
             Ok(())
         }
         Message::Error { message } => Err(message.into()),
@@ -102,7 +138,7 @@ fn open_device(stream: &mut TcpStream, device_id: u32) -> Result<OpenDeviceAck, 
 }
 
 fn run_attach(config: AttachConfig) -> Result<(), Box<dyn Error>> {
-    let mut preferred_matcher = None;
+    let mut preferred_matcher = config.preferred_matcher.clone();
 
     loop {
         let target = match resolve_target(config.host.clone()) {
@@ -115,6 +151,7 @@ fn run_attach(config: AttachConfig) -> Result<(), Box<dyn Error>> {
                 continue;
             }
         };
+        debug(&format!("Attach loop targeting {}:{}", target.host, target.port));
 
         match attach_session(&target, &config, &mut preferred_matcher) {
             Ok(()) => return Ok(()),
@@ -124,6 +161,46 @@ fn run_attach(config: AttachConfig) -> Result<(), Box<dyn Error>> {
             }
             Err(AttachFailure::Fatal(message)) => return Err(message.into()),
         }
+    }
+}
+
+fn run_attach_all(base_config: AttachConfig) -> Result<(), Box<dyn Error>> {
+    let mut workers: HashMap<String, ManagedAttachWorker> = HashMap::new();
+    let mut last_snapshot: Option<String> = None;
+
+    loop {
+        match fetch_available_devices(base_config.host.clone()) {
+            Ok(devices) => {
+                debug(&format!("Supervisor inventory refresh saw {} advertised controller(s)", devices.len()));
+                let descriptors = build_managed_worker_descriptors(&devices);
+                let snapshot = managed_worker_snapshot(&descriptors);
+                if last_snapshot.as_deref() != Some(snapshot.as_str()) {
+                    print_managed_workers(&descriptors);
+                    last_snapshot = Some(snapshot);
+                }
+
+                for descriptor in &descriptors {
+                    ensure_managed_worker(&mut workers, &base_config, descriptor.clone());
+                }
+
+                let desired_keys: HashSet<String> = descriptors
+                    .iter()
+                    .map(|descriptor| descriptor.key.clone())
+                    .collect();
+                reap_finished_workers(&mut workers, &desired_keys);
+            }
+            Err(error) => {
+                announce_retry(
+                    &format!("multi-controller supervisor could not refresh the host inventory: {error}"),
+                    base_config.retry_delay,
+                );
+                let desired_keys = HashSet::new();
+                reap_finished_workers(&mut workers, &desired_keys);
+                continue;
+            }
+        }
+
+        thread::sleep(base_config.rescan_delay);
     }
 }
 
@@ -145,11 +222,20 @@ fn attach_session(
             list_devices(&mut stream).map_err(|error| classify_control_error("device listing failed", &*error))?;
         let snapshot = device_snapshot(&devices);
         if last_snapshot.as_deref() != Some(snapshot.as_str()) {
-            print_devices(&devices);
+            if is_verbose() {
+                print_devices(&devices);
+            } else {
+                debug(&format!("Host inventory changed: {snapshot}"));
+            }
             last_snapshot = Some(snapshot);
         }
 
-        let preferred = select_device(&devices, config.requested_device_id, preferred_matcher.as_ref());
+        let preferred = select_device(
+            &devices,
+            config.requested_device_id,
+            preferred_matcher.as_ref(),
+            config.preferred_slot,
+        );
         let open_candidates: Vec<DeviceSummary> = match preferred {
             Some(device) => {
                 last_waiting_message.clear();
@@ -180,6 +266,15 @@ fn attach_session(
 
             match open_device(&mut stream, selected.device_id) {
                 Ok(spec) => {
+                    debug(&format!(
+                        "Opened {} transport={} iface={} input={} output={} interrupt_out={}",
+                        spec.name,
+                        spec.transport.label(),
+                        spec.interface_number,
+                        spec.input_packet_size,
+                        spec.output_packet_size,
+                        spec.has_interrupt_out
+                    ));
                     *preferred_matcher = Some(matcher);
                     return attach_loop(stream, spec);
                 }
@@ -224,6 +319,7 @@ fn attach_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachFailu
 }
 
 fn attach_hid_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachFailure> {
+    debug(&format!("Creating UHID device for {}", spec.name));
     let device = Arc::new(
         UhidDevice::create(&spec)
             .map_err(|error| AttachFailure::Fatal(format!("failed to create UHID device: {error}")))?,
@@ -262,11 +358,21 @@ fn attach_hid_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachF
                 status,
                 data,
             }) => {
+                debug(&format!(
+                    "Received HID GET_REPORT response request_id={} status={} size={}",
+                    request_id,
+                    status,
+                    data.len()
+                ));
                 if let Err(error) = device.reply_get_report(request_id, status, &data) {
                     break AttachFailure::Fatal(format!("failed to reply to UHID GET_REPORT: {error}"));
                 }
             }
             Ok(Message::SetReportResponse { request_id, status }) => {
+                debug(&format!(
+                    "Received HID SET_REPORT response request_id={} status={}",
+                    request_id, status
+                ));
                 if let Err(error) = device.reply_set_report(request_id, status) {
                     break AttachFailure::Fatal(format!("failed to reply to UHID SET_REPORT: {error}"));
                 }
@@ -303,6 +409,7 @@ fn attach_hid_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachF
 }
 
 fn attach_xinput_loop(mut stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachFailure> {
+    debug(&format!("Creating virtual XInput device for {}", spec.name));
     let mut device = XInput360Device::create(&spec)
         .map_err(|error| AttachFailure::Fatal(format!("failed to create virtual XInput device: {error}")))?;
     stream
@@ -342,6 +449,7 @@ fn attach_xinput_loop(mut stream: TcpStream, spec: OpenDeviceAck) -> Result<(), 
 
 fn connect_target(target: Target) -> Result<TcpStream, Box<dyn Error>> {
     let address = format!("{}:{}", target.host, target.port);
+    debug(&format!("Resolving target {address}"));
     let mut addrs = address.to_socket_addrs()?;
     let socket_addr = addrs
         .next()
@@ -365,7 +473,10 @@ fn print_devices(devices: &[DeviceSummary]) {
 
 fn resolve_target(host: Option<String>) -> Result<Target, Box<dyn Error>> {
     match host {
-        Some(host) => parse_target(&host),
+        Some(host) => {
+            debug(&format!("Using explicit host {host}"));
+            parse_target(&host)
+        }
         None => discover_servers(Duration::from_millis(900))?
             .into_iter()
             .next()
@@ -396,6 +507,11 @@ fn discover_servers(timeout: Duration) -> Result<Vec<DiscoveredServer>, Box<dyn 
     let socket = UdpSocket::bind(("0.0.0.0", 0))?;
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_millis(200)))?;
+    debug(&format!(
+        "Broadcasting discovery on UDP port {} for up to {} ms",
+        DEFAULT_DISCOVERY_PORT,
+        timeout.as_millis()
+    ));
     socket.send_to(
         DISCOVERY_REQUEST,
         SocketAddr::from(([255, 255, 255, 255], DEFAULT_DISCOVERY_PORT)),
@@ -408,6 +524,10 @@ fn discover_servers(timeout: Duration) -> Result<Vec<DiscoveredServer>, Box<dyn 
         match socket.recv_from(&mut buffer) {
             Ok((count, source)) => {
                 if let Some(server) = parse_discovery_response(&buffer[..count], source)? {
+                    debug(&format!(
+                        "Discovered host {}:{} named {}",
+                        server.host, server.port, server.name
+                    ));
                     if !servers
                         .iter()
                         .any(|existing| existing.host == server.host && existing.port == server.port)
@@ -479,12 +599,17 @@ enum Command {
         rescan_ms: u64,
         once: bool,
     },
+    AttachAll {
+        host: Option<String>,
+        retry_ms: u64,
+        rescan_ms: u64,
+    },
 }
 
 impl Command {
     fn parse(args: &[String]) -> Result<Self, Box<dyn Error>> {
         let command = match args.first().map(String::as_str) {
-            Some("discover" | "list" | "attach" | "-h" | "--help" | "help") => {
+            Some("discover" | "list" | "attach" | "attach-all" | "-h" | "--help" | "help") => {
                 args.first().map(String::as_str).unwrap()
             }
             _ => "attach",
@@ -502,6 +627,11 @@ impl Command {
                 retry_ms: parse_named_u64(args, "--retry-ms").unwrap_or(1_500),
                 rescan_ms: parse_named_u64(args, "--rescan-ms").unwrap_or(1_000),
                 once: parse_flag(args, "--once"),
+            }),
+            "attach-all" => Ok(Command::AttachAll {
+                host: parse_named_string(args, "--host"),
+                retry_ms: parse_named_u64(args, "--retry-ms").unwrap_or(1_500),
+                rescan_ms: parse_named_u64(args, "--rescan-ms").unwrap_or(1_000),
             }),
             "-h" | "--help" | "help" => {
                 print_help();
@@ -534,19 +664,36 @@ fn parse_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|arg| arg == name)
 }
 
+fn extract_global_flags(args: Vec<String>) -> (bool, Vec<String>) {
+    let mut verbose = false;
+    let mut filtered = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg == "--verbose" || arg == "-v" {
+            verbose = true;
+        } else {
+            filtered.push(arg);
+        }
+    }
+    (verbose, filtered)
+}
+
 fn print_help() {
     println!(
         "\
 USBoss Linux client
 
+Global flags:
+  --verbose, -v    Enable extra connection, inventory, and protocol debugging
+
 Commands:
   usboss-client discover [--timeout-ms 900]
   usboss-client list [--host 192.168.1.20]
   usboss-client attach [--host 192.168.1.20] [--device-id 1] [--retry-ms 1500] [--rescan-ms 1000] [--once]
+  usboss-client attach-all [--host 192.168.1.20] [--retry-ms 1500] [--rescan-ms 1000]
 
 If --host is omitted, attach/list will try UDP broadcast discovery on the local subnet.
 Attach mode stays connected, reconnects automatically, and waits for controller devices to appear unless --once is passed.
-For multiple controllers, run one attach process per device id shown by `usboss-client list`.
+Attach-all supervises one or more controllers automatically and is the recommended mode for multiplayer setups.
 "
     );
 }
@@ -558,8 +705,11 @@ struct AttachConfig {
     retry_delay: Duration,
     rescan_delay: Duration,
     once: bool,
+    preferred_matcher: Option<DeviceMatcher>,
+    preferred_slot: usize,
 }
 
+#[derive(Clone)]
 struct DeviceMatcher {
     transport: DeviceTransport,
     vendor_id: u16,
@@ -654,6 +804,7 @@ fn select_device<'a>(
     devices: &'a [DeviceSummary],
     requested_device_id: Option<u32>,
     preferred_matcher: Option<&DeviceMatcher>,
+    preferred_slot: usize,
 ) -> Option<&'a DeviceSummary> {
     if let Some(device_id) = requested_device_id {
         if let Some(device) = devices.iter().find(|device| device.device_id == device_id) {
@@ -665,7 +816,7 @@ fn select_device<'a>(
         if let Some(device) = devices.iter().find(|device| matcher.matches_exact_path(device)) {
             return Some(device);
         }
-        if let Some(device) = devices.iter().find(|device| matcher.matches_identity(device)) {
+        if let Some(device) = select_matching_slot(devices, matcher, preferred_slot) {
             return Some(device);
         }
     }
@@ -731,4 +882,160 @@ fn can_try_next_device(
     requested_device_id.is_none()
         && preferred_matcher.is_none()
         && error_message.contains("already being forwarded by another client")
+}
+
+fn fetch_available_devices(host: Option<String>) -> Result<Vec<DeviceSummary>, Box<dyn Error>> {
+    let mut stream = connect_target(resolve_target(host)?)?;
+    hello_quiet(&mut stream)?;
+    list_devices(&mut stream)
+}
+
+fn select_matching_slot<'a>(
+    devices: &'a [DeviceSummary],
+    matcher: &DeviceMatcher,
+    preferred_slot: usize,
+) -> Option<&'a DeviceSummary> {
+    let mut matches: Vec<&DeviceSummary> = devices
+        .iter()
+        .filter(|device| matcher.matches_identity(device))
+        .collect();
+    matches.sort_by(|left, right| left.system_path.cmp(&right.system_path));
+    matches.get(preferred_slot).copied()
+}
+
+#[derive(Clone)]
+struct ManagedWorkerDescriptor {
+    key: String,
+    label: String,
+    matcher: DeviceMatcher,
+    slot_index: usize,
+}
+
+struct ManagedAttachWorker {
+    label: String,
+    handle: thread::JoinHandle<()>,
+}
+
+fn build_managed_worker_descriptors(devices: &[DeviceSummary]) -> Vec<ManagedWorkerDescriptor> {
+    let mut groups: BTreeMap<String, Vec<DeviceSummary>> = BTreeMap::new();
+    for device in devices {
+        groups
+            .entry(managed_group_key(device))
+            .or_default()
+            .push(device.clone());
+    }
+
+    let mut descriptors = Vec::new();
+    for (group_key, mut group_devices) in groups {
+        group_devices.sort_by(|left, right| left.system_path.cmp(&right.system_path));
+        for (slot_index, device) in group_devices.into_iter().enumerate() {
+            descriptors.push(ManagedWorkerDescriptor {
+                key: format!("{group_key}#{slot_index}"),
+                label: format!("{device}"),
+                matcher: DeviceMatcher::from_device(&device),
+                slot_index,
+            });
+        }
+    }
+    descriptors
+}
+
+fn managed_group_key(device: &DeviceSummary) -> String {
+    format!(
+        "{}:{:04x}:{:04x}:{}:{}:{}:{}",
+        device.transport.label(),
+        device.vendor_id,
+        device.product_id,
+        device.interface_number,
+        sanitize_key_component(&device.manufacturer),
+        sanitize_key_component(&device.product),
+        if device.serial.is_empty() {
+            "no-serial".to_string()
+        } else {
+            sanitize_key_component(&device.serial)
+        },
+    )
+}
+
+fn sanitize_key_component(value: &str) -> String {
+    if value.is_empty() {
+        "-".to_string()
+    } else {
+        value.replace('|', "_").replace('#', "_")
+    }
+}
+
+fn ensure_managed_worker(
+    workers: &mut HashMap<String, ManagedAttachWorker>,
+    base_config: &AttachConfig,
+    descriptor: ManagedWorkerDescriptor,
+) {
+    let should_spawn = match workers.get(&descriptor.key) {
+        Some(worker) if !worker.handle.is_finished() => false,
+        Some(_) | None => true,
+    };
+    if !should_spawn {
+        return;
+    }
+
+    if let Some(existing) = workers.remove(&descriptor.key) {
+        let _ = existing.handle.join();
+    }
+
+    let mut worker_config = base_config.clone();
+    worker_config.preferred_matcher = Some(descriptor.matcher.clone());
+    worker_config.preferred_slot = descriptor.slot_index;
+    worker_config.requested_device_id = None;
+    worker_config.once = false;
+
+    let label = descriptor.label.clone();
+    let thread_label = label.clone();
+    let handle = thread::spawn(move || {
+        if let Err(error) = run_attach(worker_config) {
+            eprintln!("USBoss: managed attach for {thread_label} exited: {error}");
+        }
+    });
+
+    eprintln!("USBoss: supervising {label}");
+    workers.insert(descriptor.key, ManagedAttachWorker { label: descriptor.label, handle });
+}
+
+fn reap_finished_workers(workers: &mut HashMap<String, ManagedAttachWorker>, desired_keys: &HashSet<String>) {
+    let finished_keys: Vec<String> = workers
+        .iter()
+        .filter_map(|(key, worker)| {
+            if worker.handle.is_finished() && !desired_keys.contains(key) {
+                Some(key.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for key in finished_keys {
+        if let Some(worker) = workers.remove(&key) {
+            eprintln!("USBoss: stopped supervising {}", worker.label);
+            let _ = worker.handle.join();
+        }
+    }
+}
+
+fn managed_worker_snapshot(descriptors: &[ManagedWorkerDescriptor]) -> String {
+    descriptors
+        .iter()
+        .map(|descriptor| format!("{}={}", descriptor.key, descriptor.label))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn print_managed_workers(descriptors: &[ManagedWorkerDescriptor]) {
+    if descriptors.is_empty() {
+        println!("Managed controllers: none currently advertised");
+        return;
+    }
+
+    println!("Managed controllers:");
+    for descriptor in descriptors {
+        println!("  slot {} -> {}", descriptor.slot_index + 1, descriptor.label);
+    }
 }

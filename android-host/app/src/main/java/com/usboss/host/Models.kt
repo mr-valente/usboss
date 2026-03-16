@@ -9,6 +9,8 @@ data class HostUiState(
     val connectedClient: String? = null,
     val devices: List<UsbCandidate> = emptyList(),
     val lastError: String? = null,
+    val verboseLogging: Boolean = false,
+    val recentEvents: List<String> = emptyList(),
 )
 
 data class UsbCandidate(

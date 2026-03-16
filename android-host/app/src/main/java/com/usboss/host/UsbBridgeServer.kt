@@ -40,6 +40,7 @@ class UsbBridgeServer(
 
     fun start() {
         stopping = false
+        HostRuntime.note("Starting TCP/UDP bridge server", addToRecent = true)
         discoveryJob = ioScope.launch {
             try {
                 runDiscoveryLoop()
@@ -66,6 +67,7 @@ class UsbBridgeServer(
 
     fun stop() {
         stopping = true
+        HostRuntime.note("Stopping TCP/UDP bridge server", addToRecent = true)
         discoverySocket?.close()
         serverSocket?.close()
         snapshotSessions().forEach { session ->
@@ -80,6 +82,7 @@ class UsbBridgeServer(
     }
 
     fun onAvailableDevicesChanged(availablePaths: Set<String>) {
+        HostRuntime.debug("Available device paths changed: ${availablePaths.joinToString()}")
         val affectedSessions = synchronized(sessionLock) {
             sessions.values
                 .filter { session ->
@@ -102,6 +105,7 @@ class UsbBridgeServer(
         serverSocket = ServerSocket(Protocol.DEFAULT_TCP_PORT).apply {
             reuseAddress = true
         }
+        HostRuntime.note("TCP bridge listening on ${Protocol.DEFAULT_TCP_PORT}")
         onStatus("Listening on ${Protocol.DEFAULT_TCP_PORT}")
 
         while (ioScope.isActive) {
@@ -112,6 +116,10 @@ class UsbBridgeServer(
             } ?: break
 
             val sessionId = registerSession(socket)
+            HostRuntime.note(
+                "Accepted Linux client session $sessionId from ${socket.inetAddress.hostAddress}",
+                addToRecent = true,
+            )
             ioScope.launch {
                 try {
                     handleClient(sessionId, socket)
@@ -136,6 +144,7 @@ class UsbBridgeServer(
 
         val hello = Protocol.read(input)
         require(hello is Protocol.Message.Hello) { "Expected USBoss hello frame" }
+        HostRuntime.debug("Session $sessionId completed handshake")
         writerMutex.withLock {
             Protocol.write(output, Protocol.Message.HelloAck(serverName()))
         }
@@ -147,6 +156,7 @@ class UsbBridgeServer(
             session@ while (scope.isActive && !socket.isClosed) {
                 when (val message = Protocol.read(input)) {
                     Protocol.Message.ListDevices -> {
+                        HostRuntime.debug("Session $sessionId requested device list")
                         writerMutex.withLock {
                             Protocol.write(
                                 output,
@@ -156,6 +166,7 @@ class UsbBridgeServer(
                     }
 
                     is Protocol.Message.OpenDevice -> {
+                        HostRuntime.note("Session $sessionId requested device ${message.deviceId}", addToRecent = true)
                         inputPump?.cancelAndJoin()
                         openedDevice?.close()
                         releaseDevice(sessionId)
@@ -183,6 +194,7 @@ class UsbBridgeServer(
                         if (!tryReserveDevice(sessionId, device.systemPath)) {
                             device.close()
                             val errorMessage = "USB device is already being forwarded by another client"
+                            HostRuntime.note("Session $sessionId could not reserve ${device.systemPath}: already in use")
                             writerMutex.withLock {
                                 Protocol.write(output, Protocol.Message.Error(errorMessage))
                             }
@@ -196,6 +208,7 @@ class UsbBridgeServer(
                         }
 
                         inputPump = ioScope.launch {
+                            HostRuntime.debug("Session $sessionId started input pump for ${spec.name}")
                             device.startInputPump(
                                 scope = this,
                                 onReport = { report ->
@@ -232,12 +245,18 @@ class UsbBridgeServer(
                             reportId = message.reportId,
                             data = message.data,
                         )
+                        HostRuntime.debug(
+                            "Session $sessionId sent output report type=${message.reportType} id=${message.reportId} size=${message.data.size} status=$status",
+                        )
                         if (status != 0) {
                             onStatus("Output report fallback returned errno $status")
                         }
                     }
 
                     is Protocol.Message.GetReportRequest -> {
+                        HostRuntime.debug(
+                            "Session $sessionId received GET_REPORT request type=${message.reportType} id=${message.reportId} request=${message.requestId}",
+                        )
                         if (openedDevice == null) {
                             writerMutex.withLock {
                                 Protocol.write(
@@ -270,6 +289,9 @@ class UsbBridgeServer(
                     }
 
                     is Protocol.Message.SetReportRequest -> {
+                        HostRuntime.debug(
+                            "Session $sessionId received SET_REPORT request type=${message.reportType} id=${message.reportId} request=${message.requestId} size=${message.data.size}",
+                        )
                         if (openedDevice == null) {
                             writerMutex.withLock {
                                 Protocol.write(
@@ -311,8 +333,10 @@ class UsbBridgeServer(
                 }
             }
         } catch (_: EOFException) {
+            HostRuntime.note("Linux client session $sessionId disconnected")
             onStatus("Client disconnected")
         } finally {
+            HostRuntime.debug("Cleaning up session $sessionId")
             inputPump?.cancelAndJoin()
             openedDevice?.close()
             releaseDevice(sessionId)
@@ -338,6 +362,7 @@ class UsbBridgeServer(
             if (payload.trim() != Protocol.DISCOVERY_REQUEST) {
                 continue
             }
+            HostRuntime.debug("Received UDP discovery probe from ${packet.address.hostAddress}:${packet.port}")
 
             val response = Protocol.discoveryResponse(serverName(), Protocol.DEFAULT_TCP_PORT)
                 .encodeToByteArray()
@@ -349,6 +374,7 @@ class UsbBridgeServer(
             )
             runCatching {
                 discoverySocket?.send(responsePacket)
+                HostRuntime.debug("Sent discovery response to ${packet.address.hostAddress}:${packet.port}")
             }
         }
     }

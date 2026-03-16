@@ -54,6 +54,7 @@ class OpenedXInputDevice(
         onReport: (ByteArray) -> Unit,
         onError: (Throwable) -> Unit,
     ): Job = scope.launch(Dispatchers.IO) {
+        HostRuntime.debug("Starting XInput input pump for ${candidate.systemPath}")
         val request = UsbRequest()
         if (!request.initialize(connection, inputEndpoint)) {
             onError(IOException("Failed to initialize XInput interrupt reader"))
@@ -86,9 +87,11 @@ class OpenedXInputDevice(
             }
         } catch (error: Throwable) {
             if (!closed.get()) {
+                HostRuntime.logError("XInput input pump failed for ${candidate.systemPath}", error)
                 onError(error)
             }
         } finally {
+            HostRuntime.debug("Stopping XInput input pump for ${candidate.systemPath}")
             request.close()
         }
     }
@@ -113,6 +116,9 @@ class OpenedXInputDevice(
                 return 5
             }
             val completed = connection.requestWait(250)
+            HostRuntime.debug(
+                "Sent XInput output report for ${candidate.systemPath}: type=$reportType id=$reportId size=${data.size} completed=${completed == request}",
+            )
             if (completed == request) 0 else 5
         } catch (_: Throwable) {
             5

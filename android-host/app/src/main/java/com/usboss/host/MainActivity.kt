@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -39,6 +40,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val state by HostRuntime.state.collectAsState()
             LaunchedEffect(Unit) {
+                HostRuntime.initialize(this@MainActivity)
                 HostRuntime.refreshDevices(this@MainActivity)
             }
             UsbBossScreen(
@@ -47,6 +49,8 @@ class MainActivity : ComponentActivity() {
                 onStop = { dispatchServiceAction(this, UsbBossService.ACTION_STOP) },
                 onRefresh = { HostRuntime.refreshDevices(this) },
                 onGrant = { HostRuntime.requestPermissions(this) },
+                onToggleVerbose = { HostRuntime.setVerboseLogging(this, !state.verboseLogging) },
+                onClearEvents = { HostRuntime.clearRecentEvents() },
             )
         }
     }
@@ -68,6 +72,8 @@ private fun UsbBossScreen(
     onStop: () -> Unit,
     onRefresh: () -> Unit,
     onGrant: () -> Unit,
+    onToggleVerbose: () -> Unit,
+    onClearEvents: () -> Unit,
 ) {
     val scrollState = rememberScrollState()
     val background = Brush.linearGradient(
@@ -101,9 +107,21 @@ private fun UsbBossScreen(
                     style = MaterialTheme.typography.bodyLarge,
                 )
 
-                ActionRow(onStart = onStart, onStop = onStop, onRefresh = onRefresh, onGrant = onGrant)
+                ActionRow(
+                    state = state,
+                    onStart = onStart,
+                    onStop = onStop,
+                    onRefresh = onRefresh,
+                    onGrant = onGrant,
+                    onToggleVerbose = onToggleVerbose,
+                    onClearEvents = onClearEvents,
+                )
 
                 SummaryCard(state)
+
+                if (state.verboseLogging || state.recentEvents.isNotEmpty()) {
+                    RecentEventsCard(state)
+                }
 
                 if (state.lastError != null) {
                     Card(
@@ -131,7 +149,7 @@ private fun UsbBossScreen(
                             Text("No supported controller interfaces detected.", color = Color.White)
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                "It is fine to leave the host running before the controller is plugged in. Linux attach mode can stay connected and wait.",
+                                "It is fine to leave the host running before the controller is plugged in. Linux attach-all can stay connected and wait.",
                                 color = Color(0xFFD5D9E0),
                             )
                             Spacer(Modifier.height(8.dp))
@@ -153,17 +171,24 @@ private fun UsbBossScreen(
 
 @Composable
 private fun ActionRow(
+    state: HostUiState,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onRefresh: () -> Unit,
     onGrant: () -> Unit,
+    onToggleVerbose: () -> Unit,
+    onClearEvents: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Button(onClick = onStart, modifier = Modifier.weight(1f)) {
+            Button(
+                onClick = onStart,
+                enabled = !state.serviceRunning,
+                modifier = Modifier.weight(1f),
+            ) {
                 Text("Start Host")
             }
             Button(onClick = onGrant, modifier = Modifier.weight(1f)) {
@@ -177,8 +202,27 @@ private fun ActionRow(
             Button(onClick = onRefresh, modifier = Modifier.weight(1f)) {
                 Text("Refresh")
             }
-            Button(onClick = onStop, modifier = Modifier.weight(1f)) {
+            Button(
+                onClick = onStop,
+                enabled = state.serviceRunning,
+                modifier = Modifier.weight(1f),
+            ) {
                 Text("Stop")
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Button(onClick = onToggleVerbose, modifier = Modifier.weight(1f)) {
+                Text(if (state.verboseLogging) "Verbose: On" else "Verbose: Off")
+            }
+            Button(
+                onClick = onClearEvents,
+                enabled = state.recentEvents.isNotEmpty(),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Clear Events")
             }
         }
     }
@@ -198,15 +242,24 @@ private fun SummaryCard(state: HostUiState) {
             Text("Linux connect command", color = Color(0xFFF4D26A), fontWeight = FontWeight.SemiBold)
             Text(
                 text = if (state.serverIp.isBlank()) {
-                    "usboss-client attach"
+                    if (state.devices.size != 1) {
+                        "usboss-client attach-all"
+                    } else {
+                        "usboss-client attach"
+                    }
                 } else {
-                    "usboss-client attach --host ${state.serverIp}:${state.tcpPort}"
+                    if (state.devices.size != 1) {
+                        "usboss-client attach-all --host ${state.serverIp}:${state.tcpPort}"
+                    } else {
+                        "usboss-client attach --host ${state.serverIp}:${state.tcpPort}"
+                    }
                 },
                 color = Color.White,
                 style = MaterialTheme.typography.bodyLarge,
             )
             Text("Discovery UDP port: ${state.discoveryPort}", color = Color(0xFFD5D9E0))
             Text("TCP stream port: ${state.tcpPort}", color = Color(0xFFD5D9E0))
+            Text("Detected controller interfaces: ${state.devices.size}", color = Color(0xFFD5D9E0))
             Text(
                 "Connected client(s): ${state.connectedClient ?: "none"}",
                 color = Color(0xFFD5D9E0),
@@ -216,9 +269,53 @@ private fun SummaryCard(state: HostUiState) {
                 color = Color(0xFF9FA7B5),
             )
             Text(
-                "For multiple controllers, run one Linux attach process per device id from `usboss-client list`.",
+                "Use `attach-all` for seamless multiplayer. `attach --device-id` is still available for manual pinning.",
                 color = Color(0xFF9FA7B5),
             )
+            Text(
+                "Verbose logging: ${if (state.verboseLogging) "enabled" else "disabled"}",
+                color = Color(0xFF9FA7B5),
+            )
+            SelectionContainer {
+                Text(
+                    "adb logcat -s USBoss",
+                    color = Color(0xFF9FA7B5),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentEventsCard(state: HostUiState) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Recent Events", color = Color(0xFFF4D26A), fontWeight = FontWeight.SemiBold)
+            Text(
+                "Turn on verbose mode before testing hardware to capture richer logs here and in adb logcat.",
+                color = Color(0xFFD5D9E0),
+            )
+            val recentEvents = state.recentEvents.takeLast(12).asReversed()
+            if (recentEvents.isEmpty()) {
+                Text("No recent events captured yet.", color = Color(0xFF9FA7B5))
+            } else {
+                recentEvents.forEach { event ->
+                    SelectionContainer {
+                        Text(
+                            event,
+                            color = Color(0xFFD5D9E0),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
         }
     }
 }
