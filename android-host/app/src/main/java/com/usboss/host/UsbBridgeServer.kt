@@ -142,7 +142,11 @@ class UsbBridgeServer(
 
         val hello = Protocol.read(input)
         require(hello is Protocol.Message.Hello) { "Expected USBoss hello frame" }
-        HostRuntime.debug("Session $sessionId completed handshake")
+        synchronized(sessionLock) {
+            sessions[sessionId]?.clientName = hello.clientName
+        }
+        HostRuntime.note("Session $sessionId hello from ${hello.clientName}")
+        HostRuntime.debug("Session $sessionId completed handshake from ${hello.clientName}")
         writerMutex.withLock {
             Protocol.write(output, Protocol.Message.HelloAck(serverName()))
         }
@@ -525,6 +529,7 @@ class UsbBridgeServer(
         val clientLabel: String,
         var activeDeviceSystemPath: String? = null,
         var role: SessionRole = SessionRole.Monitoring,
+        var clientName: String = "unknown",
     )
 
     private data class SessionPresentation(

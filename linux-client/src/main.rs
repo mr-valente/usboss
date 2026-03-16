@@ -21,6 +21,8 @@ use protocol::{
 use uhid::UhidDevice;
 use uinput::XInput360Device;
 
+const BUILD_FINGERPRINT: &str = "monitor-sessions-v3-2026-03-16";
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("USBoss error: {error}");
@@ -34,10 +36,22 @@ fn run() -> Result<(), Box<dyn Error>> {
     set_verbose(verbose);
     if verbose {
         debug("Verbose logging enabled");
+        debug(&format!(
+            "Linux client build {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            BUILD_FINGERPRINT
+        ));
     }
     let command = Command::parse(&args)?;
 
     match command {
+        Command::Version => {
+            println!(
+                "usboss-client {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                BUILD_FINGERPRINT
+            );
+        }
         Command::Discover { timeout_ms } => {
             let servers = discover_servers(Duration::from_millis(timeout_ms))?;
             if servers.is_empty() {
@@ -50,7 +64,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         Command::List { host } => {
             let mut stream = connect_target(resolve_target(host)?)?;
-            hello(&mut stream)?;
+            hello(&mut stream, "usboss-client/list")?;
             let devices = list_devices(&mut stream)?;
             print_devices(&devices);
         }
@@ -69,6 +83,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 once,
                 preferred_matcher: None,
                 preferred_slot: 0,
+                client_name: "usboss-client/attach",
             })?;
         }
         Command::AttachAll {
@@ -84,6 +99,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 once: false,
                 preferred_matcher: None,
                 preferred_slot: 0,
+                client_name: "usboss-client/attach-all-worker",
             })?;
         }
     }
@@ -91,19 +107,23 @@ fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn hello(stream: &mut TcpStream) -> Result<(), Box<dyn Error>> {
-    hello_with_logging(stream, true)
+fn hello(stream: &mut TcpStream, client_name: &str) -> Result<(), Box<dyn Error>> {
+    hello_with_logging(stream, client_name, true)
 }
 
-fn hello_quiet(stream: &mut TcpStream) -> Result<(), Box<dyn Error>> {
-    hello_with_logging(stream, false)
+fn hello_quiet(stream: &mut TcpStream, client_name: &str) -> Result<(), Box<dyn Error>> {
+    hello_with_logging(stream, client_name, false)
 }
 
-fn hello_with_logging(stream: &mut TcpStream, log_connection: bool) -> Result<(), Box<dyn Error>> {
+fn hello_with_logging(
+    stream: &mut TcpStream,
+    client_name: &str,
+    log_connection: bool,
+) -> Result<(), Box<dyn Error>> {
     write_message(
         stream,
         &Message::Hello {
-            client_name: "usboss-client".to_string(),
+            client_name: client_name.to_string(),
         },
     )?;
     match read_message(stream)? {
@@ -167,31 +187,88 @@ fn run_attach(config: AttachConfig) -> Result<(), Box<dyn Error>> {
 fn run_attach_all(base_config: AttachConfig) -> Result<(), Box<dyn Error>> {
     let mut workers: HashMap<String, ManagedAttachWorker> = HashMap::new();
     let mut last_snapshot: Option<String> = None;
-    let mut monitor = InventoryMonitor::new(base_config.host.clone(), base_config.retry_delay);
 
     loop {
-        let devices = monitor.next_snapshot();
+        let target = match resolve_target(base_config.host.clone()) {
+            Ok(target) => target,
+            Err(error) => {
+                announce_retry(
+                    &format!("attach-all inventory monitor could not resolve the host: {error}"),
+                    base_config.retry_delay,
+                );
+                continue;
+            }
+        };
         debug(&format!(
-            "Supervisor inventory refresh saw {} advertised controller(s)",
-            devices.len()
+            "attach-all inventory monitor dialing {}:{}",
+            target.host, target.port
         ));
-        let descriptors = build_managed_worker_descriptors(&devices);
-        let snapshot = managed_worker_snapshot(&descriptors);
-        if last_snapshot.as_deref() != Some(snapshot.as_str()) {
-            print_managed_workers(&descriptors);
-            last_snapshot = Some(snapshot);
+
+        let mut stream = match connect_target(target.clone()) {
+            Ok(stream) => stream,
+            Err(error) => {
+                announce_retry(
+                    &format!(
+                        "attach-all inventory monitor could not connect to {}:{}: {error}",
+                        target.host, target.port
+                    ),
+                    base_config.retry_delay,
+                );
+                continue;
+            }
+        };
+        if let Err(error) = hello_quiet(&mut stream, "usboss-client/attach-all-monitor") {
+            announce_retry(
+                &format!(
+                    "attach-all inventory monitor handshake failed with {}:{}: {error}",
+                    target.host, target.port
+                ),
+                base_config.retry_delay,
+            );
+            continue;
         }
 
-        for descriptor in &descriptors {
-            ensure_managed_worker(&mut workers, &base_config, descriptor.clone());
-        }
+        eprintln!(
+            "USBoss: attach-all inventory monitor connected to {}:{}",
+            target.host, target.port
+        );
 
-        let desired_keys: HashSet<String> = descriptors
-            .iter()
-            .map(|descriptor| descriptor.key.clone())
-            .collect();
-        reap_finished_workers(&mut workers, &desired_keys);
-        thread::sleep(base_config.rescan_delay);
+        loop {
+            let devices = match list_devices(&mut stream) {
+                Ok(devices) => devices,
+                Err(error) => {
+                    announce_retry(
+                        &format!(
+                            "attach-all inventory monitor lost connection to {}:{}: {error}",
+                            target.host, target.port
+                        ),
+                        base_config.retry_delay,
+                    );
+                    break;
+                }
+            };
+            debug(&format!(
+                "Supervisor inventory refresh saw {} advertised controller(s)",
+                devices.len()
+            ));
+            let descriptors = build_managed_worker_descriptors(&devices);
+            let snapshot = managed_worker_snapshot(&descriptors);
+            if last_snapshot.as_deref() != Some(snapshot.as_str()) {
+                print_managed_workers(&descriptors);
+                last_snapshot = Some(snapshot);
+            }
+
+            for descriptor in &descriptors {
+                ensure_managed_worker(&mut workers, &base_config, descriptor.clone());
+            }
+
+            let desired_keys: HashSet<String> = descriptors
+                .iter()
+                .map(|descriptor| descriptor.key.clone())
+                .collect();
+            reap_finished_workers(&mut workers, &desired_keys);
+            thread::sleep(base_config.rescan_delay);
+        }
     }
 }
 
@@ -203,7 +280,8 @@ fn attach_session(
     let mut stream = connect_target(target.clone()).map_err(|error| {
         AttachFailure::Retryable(format!("unable to connect to {}:{}: {error}", target.host, target.port))
     })?;
-    hello(&mut stream).map_err(|error| classify_control_error("handshake failed", &*error))?;
+    hello(&mut stream, config.client_name)
+        .map_err(|error| classify_control_error("handshake failed", &*error))?;
 
     let mut last_snapshot: Option<String> = None;
     let mut last_waiting_message = String::new();
@@ -581,6 +659,7 @@ struct DiscoveredServer {
 }
 
 enum Command {
+    Version,
     Discover { timeout_ms: u64 },
     List { host: Option<String> },
     Attach {
@@ -600,12 +679,16 @@ enum Command {
 impl Command {
     fn parse(args: &[String]) -> Result<Self, Box<dyn Error>> {
         let command = match args.first().map(String::as_str) {
-            Some("discover" | "list" | "attach" | "attach-all" | "-h" | "--help" | "help") => {
+            Some(
+                "discover" | "list" | "attach" | "attach-all" | "version" | "--version" | "-h"
+                    | "--help" | "help",
+            ) => {
                 args.first().map(String::as_str).unwrap()
             }
             _ => "attach",
         };
         match command {
+            "version" | "--version" => Ok(Command::Version),
             "discover" => Ok(Command::Discover {
                 timeout_ms: parse_named_u64(args, "--timeout-ms").unwrap_or(900),
             }),
@@ -677,6 +760,7 @@ Global flags:
   --verbose, -v    Enable extra connection, inventory, and protocol debugging
 
 Commands:
+  usboss-client version
   usboss-client discover [--timeout-ms 900]
   usboss-client list [--host 192.168.1.20]
   usboss-client attach [--host 192.168.1.20] [--device-id 1] [--retry-ms 1500] [--rescan-ms 1000] [--once]
@@ -698,6 +782,7 @@ struct AttachConfig {
     once: bool,
     preferred_matcher: Option<DeviceMatcher>,
     preferred_slot: usize,
+    client_name: &'static str,
 }
 
 #[derive(Clone)]
@@ -899,101 +984,6 @@ struct ManagedWorkerDescriptor {
 struct ManagedAttachWorker {
     label: String,
     handle: thread::JoinHandle<()>,
-}
-
-struct InventoryMonitor {
-    host: Option<String>,
-    retry_delay: Duration,
-    target: Option<Target>,
-    stream: Option<TcpStream>,
-}
-
-impl InventoryMonitor {
-    fn new(host: Option<String>, retry_delay: Duration) -> Self {
-        Self {
-            host,
-            retry_delay,
-            target: None,
-            stream: None,
-        }
-    }
-
-    fn next_snapshot(&mut self) -> Vec<DeviceSummary> {
-        loop {
-            if let Err(message) = self.ensure_connected() {
-                announce_retry(&message, self.retry_delay);
-                continue;
-            }
-
-            let result = {
-                let stream = self
-                    .stream
-                    .as_mut()
-                    .expect("inventory monitor must have a stream after connect");
-                list_devices(stream)
-            };
-
-            match result {
-                Ok(devices) => {
-                    debug(&format!(
-                        "attach-all inventory monitor polled {} controller(s)",
-                        devices.len()
-                    ));
-                    return devices;
-                }
-                Err(error) => {
-                    let message = if let Some(target) = &self.target {
-                        format!(
-                            "attach-all inventory monitor lost connection to {}:{}: {error}",
-                            target.host, target.port
-                        )
-                    } else {
-                        format!("attach-all inventory monitor lost its host connection: {error}")
-                    };
-                    self.disconnect();
-                    announce_retry(&message, self.retry_delay);
-                }
-            }
-        }
-    }
-
-    fn ensure_connected(&mut self) -> Result<(), String> {
-        if self.stream.is_some() {
-            return Ok(());
-        }
-
-        let target = resolve_target(self.host.clone())
-            .map_err(|error| format!("attach-all inventory monitor could not resolve the host: {error}"))?;
-        debug(&format!(
-            "attach-all inventory monitor dialing {}:{}",
-            target.host, target.port
-        ));
-        let mut stream = connect_target(target.clone()).map_err(|error| {
-            format!(
-                "attach-all inventory monitor could not connect to {}:{}: {error}",
-                target.host, target.port
-            )
-        })?;
-        hello_quiet(&mut stream).map_err(|error| {
-            format!(
-                "attach-all inventory monitor handshake failed with {}:{}: {error}",
-                target.host, target.port
-            )
-        })?;
-
-        eprintln!(
-            "USBoss: attach-all inventory monitor connected to {}:{}",
-            target.host, target.port
-        );
-        self.target = Some(target);
-        self.stream = Some(stream);
-        Ok(())
-    }
-
-    fn disconnect(&mut self) {
-        self.stream = None;
-        self.target = None;
-    }
 }
 
 fn build_managed_worker_descriptors(devices: &[DeviceSummary]) -> Vec<ManagedWorkerDescriptor> {

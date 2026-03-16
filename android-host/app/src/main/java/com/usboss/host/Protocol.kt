@@ -173,7 +173,7 @@ object Protocol {
                 payload.writeString(spec.name)
                 payload.writeString(spec.phys)
                 payload.writeString(spec.uniq)
-                payload.writeBytes(spec.reportDescriptor)
+                payload.writeSizedBytes(spec.reportDescriptor)
                 TYPE_OPEN_DEVICE_ACK
             }
 
@@ -183,14 +183,14 @@ object Protocol {
             }
 
             is Message.InputReport -> {
-                payload.writeBytes(message.data)
+                payload.writeSizedBytes(message.data)
                 TYPE_INPUT_REPORT
             }
 
             is Message.OutputReport -> {
                 payload.writeU8(message.reportType)
                 payload.writeU8(message.reportId)
-                payload.writeBytes(message.data)
+                payload.writeSizedBytes(message.data)
                 TYPE_OUTPUT_REPORT
             }
 
@@ -204,7 +204,7 @@ object Protocol {
             is Message.GetReportResponse -> {
                 payload.writeU32(message.requestId)
                 payload.writeI32(message.status)
-                payload.writeBytes(message.data)
+                payload.writeSizedBytes(message.data)
                 TYPE_GET_REPORT_RESPONSE
             }
 
@@ -212,7 +212,7 @@ object Protocol {
                 payload.writeU32(message.requestId)
                 payload.writeU8(message.reportType)
                 payload.writeU8(message.reportId)
-                payload.writeBytes(message.data)
+                payload.writeSizedBytes(message.data)
                 TYPE_SET_REPORT_REQUEST
             }
 
@@ -430,10 +430,10 @@ object Protocol {
     }
 
     private fun OutputStream.writeString(value: String) {
-        writeBytes(value.encodeToByteArray())
+        writeSizedBytes(value.encodeToByteArray())
     }
 
-    private fun OutputStream.writeBytes(value: ByteArray) {
+    private fun OutputStream.writeSizedBytes(value: ByteArray) {
         writeU16(min(value.size, 0xffff))
         write(value, 0, min(value.size, 0xffff))
     }
