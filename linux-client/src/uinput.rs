@@ -287,11 +287,25 @@ fn parse_xinput360_report(data: &[u8]) -> Option<XInput360State> {
 }
 
 fn open_uinput() -> io::Result<File> {
-    OpenOptions::new()
+    match OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/uinput")
-        .or_else(|_| OpenOptions::new().read(true).write(true).open("/dev/input/uinput"))
+    {
+        Ok(file) => {
+            debug("Using /dev/uinput");
+            Ok(file)
+        }
+        Err(primary_error) if primary_error.kind() != io::ErrorKind::NotFound => Err(primary_error),
+        Err(_) => {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/input/uinput")?;
+            debug("Using /dev/input/uinput");
+            Ok(file)
+        }
+    }
 }
 
 fn bit(byte: u8, mask: u8) -> bool {

@@ -181,7 +181,10 @@ object HostRuntime {
         } else {
             Log.e(TAG, message)
         }
-        val throwableSuffix = throwable?.message?.let { " (${it})" }.orEmpty()
+        val throwableSuffix = throwable?.let {
+            val detail = it.message?.takeIf(String::isNotBlank) ?: it.javaClass.simpleName
+            " ($detail)"
+        }.orEmpty()
         appendRecentEvent("ERROR", message + throwableSuffix)
     }
 

@@ -987,8 +987,9 @@ struct ManagedAttachWorker {
 }
 
 fn build_managed_worker_descriptors(devices: &[DeviceSummary]) -> Vec<ManagedWorkerDescriptor> {
+    let preferred_devices = prefer_xinput_siblings(devices);
     let mut groups: BTreeMap<String, Vec<DeviceSummary>> = BTreeMap::new();
-    for device in devices {
+    for device in preferred_devices {
         groups
             .entry(managed_group_key(device))
             .or_default()
@@ -1008,6 +1009,36 @@ fn build_managed_worker_descriptors(devices: &[DeviceSummary]) -> Vec<ManagedWor
         }
     }
     descriptors
+}
+
+fn prefer_xinput_siblings<'a>(devices: &'a [DeviceSummary]) -> Vec<&'a DeviceSummary> {
+    let mut xinput_roots = HashSet::new();
+    for device in devices {
+        if device.transport == DeviceTransport::XInput360 {
+            xinput_roots.insert(system_path_root(&device.system_path).to_string());
+        }
+    }
+    if xinput_roots.is_empty() {
+        return devices.iter().collect();
+    }
+
+    let mut filtered = Vec::new();
+    for device in devices {
+        let root = system_path_root(&device.system_path);
+        if device.transport == DeviceTransport::Hid && xinput_roots.contains(root) {
+            debug(&format!(
+                "Skipping HID sibling {} because XInput is available for {}",
+                device.system_path, root
+            ));
+            continue;
+        }
+        filtered.push(device);
+    }
+    filtered
+}
+
+fn system_path_root(system_path: &str) -> &str {
+    system_path.split_once("#if").map(|(root, _)| root).unwrap_or(system_path)
 }
 
 fn managed_group_key(device: &DeviceSummary) -> String {

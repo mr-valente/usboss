@@ -136,7 +136,7 @@ object UsbDeviceCatalog {
         usbManager: UsbManager,
         device: UsbDevice,
     ): List<UsbCandidate> {
-        return (0 until device.interfaceCount)
+        val candidates = (0 until device.interfaceCount)
             .map(device::getInterface)
             .filter { usbInterface ->
                 usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_IN) != null &&
@@ -165,6 +165,15 @@ object UsbDeviceCatalog {
                     hasPermission = usbManager.hasPermission(device),
                 )
             }
+        val hasXInput = candidates.any { it.transport == Protocol.TRANSPORT_XINPUT_360 }
+        if (!hasXInput) {
+            return candidates
+        }
+        val filtered = candidates.filter { it.transport == Protocol.TRANSPORT_XINPUT_360 }
+        HostRuntime.debug(
+            "Preferring XInput interfaces for ${device.deviceName}; hiding ${candidates.size - filtered.size} HID sibling(s)",
+        )
+        return filtered
     }
 
     private fun classifyTransport(device: UsbDevice, usbInterface: UsbInterface): Int? {
