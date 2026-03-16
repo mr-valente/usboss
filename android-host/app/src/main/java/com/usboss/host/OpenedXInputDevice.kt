@@ -13,6 +13,9 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
+private const val XINPUT_REPORT_LOG_LIMIT = 12
+private const val XINPUT_PLAYER_ONE_COMMAND = 0x02
+
 class OpenedXInputDevice(
     private val candidate: UsbCandidate,
     private val connection: UsbDeviceConnection,
@@ -63,11 +66,15 @@ class OpenedXInputDevice(
 
         val packetSize = inputEndpoint.maxPacketSize.coerceAtLeast(32)
         val buffer = ByteBuffer.allocateDirect(packetSize)
+        var reportCount = 0
+        var zeroLengthCompletions = 0
+
+        sendInitPacketIfNeeded()
 
         try {
             while (isActive && !closed.get()) {
-                buffer.clear()
-                if (!request.queue(buffer)) {
+                zeroFill(buffer)
+                if (!queueInterruptRequest(request, buffer, packetSize)) {
                     throw IOException("Failed to queue XInput interrupt read")
                 }
 
@@ -78,13 +85,28 @@ class OpenedXInputDevice(
                     continue
                 }
 
-                val size = buffer.position()
+                var size = buffer.position()
                 if (size <= 0) {
-                    continue
+                    zeroLengthCompletions += 1
+                    size = packetSize
+                    buffer.position(0)
+                    buffer.limit(size)
+                    HostRuntime.debug(
+                        "XInput read for ${candidate.systemPath} completed with a zero reported length; " +
+                            "falling back to $packetSize bytes (count=$zeroLengthCompletions)",
+                    )
+                } else {
+                    buffer.flip()
                 }
+
                 val data = ByteArray(size)
-                buffer.flip()
                 buffer.get(data)
+                reportCount += 1
+                if (shouldLogReport(reportCount)) {
+                    HostRuntime.debug(
+                        "XInput report #$reportCount for ${candidate.systemPath} (${data.size} bytes): ${data.hexSnippet()}",
+                    )
+                }
                 onReport(data)
             }
         } catch (error: Throwable) {
@@ -114,7 +136,7 @@ class OpenedXInputDevice(
             val buffer = ByteBuffer.allocateDirect(data.size)
             buffer.put(data)
             buffer.flip()
-            if (!request.queue(buffer)) {
+            if (!queueInterruptRequest(request, buffer, data.size)) {
                 return 5
             }
             val completed = connection.requestWait(250)
@@ -147,5 +169,83 @@ class OpenedXInputDevice(
         runCatching {
             connection.close()
         }
+    }
+
+    private fun sendInitPacketIfNeeded() {
+        val endpoint = outputEndpoint ?: return
+        val packet = when {
+            candidate.interfaceProtocol == 0x81 || looksLikeWirelessXInput() ->
+                byteArrayOf(
+                    0x00.toByte(),
+                    0x00.toByte(),
+                    0x08.toByte(),
+                    (0x40 + (XINPUT_PLAYER_ONE_COMMAND % 0x0e)).toByte(),
+                    0x00.toByte(),
+                    0x00.toByte(),
+                    0x00.toByte(),
+                    0x00.toByte(),
+                    0x00.toByte(),
+                    0x00.toByte(),
+                    0x00.toByte(),
+                    0x00.toByte(),
+                )
+
+            else -> byteArrayOf(
+                0x01.toByte(),
+                0x03.toByte(),
+                XINPUT_PLAYER_ONE_COMMAND.toByte(),
+            )
+        }
+
+        val request = UsbRequest()
+        try {
+            if (!request.initialize(connection, endpoint)) {
+                HostRuntime.debug("Failed to initialize XInput init request for ${candidate.systemPath}")
+                return
+            }
+            val buffer = ByteBuffer.allocateDirect(packet.size)
+            buffer.put(packet)
+            buffer.flip()
+            val queued = queueInterruptRequest(request, buffer, packet.size)
+            val completed = if (queued) connection.requestWait(250) else null
+            HostRuntime.debug(
+                "Sent XInput init packet for ${candidate.systemPath}: ${packet.hexSnippet()} completed=${completed == request}",
+            )
+        } catch (error: Throwable) {
+            HostRuntime.logError("Failed to send XInput init packet for ${candidate.systemPath}", error)
+        } finally {
+            request.close()
+        }
+    }
+
+    private fun looksLikeWirelessXInput(): Boolean {
+        return candidate.interfaceClass == 0xff &&
+            candidate.inputPacketSize >= 32 &&
+            candidate.outputPacketSize >= 32
+    }
+
+    @Suppress("DEPRECATION")
+    private fun queueInterruptRequest(
+        request: UsbRequest,
+        buffer: ByteBuffer,
+        length: Int,
+    ): Boolean = request.queue(buffer, length)
+
+    private fun zeroFill(buffer: ByteBuffer) {
+        buffer.clear()
+        while (buffer.hasRemaining()) {
+            buffer.put(0.toByte())
+        }
+        buffer.clear()
+    }
+
+    private fun shouldLogReport(reportCount: Int): Boolean {
+        return reportCount <= XINPUT_REPORT_LOG_LIMIT || reportCount % 100 == 0
+    }
+
+    private fun ByteArray.hexSnippet(limit: Int = 24): String {
+        return take(limit)
+            .joinToString(" ") { byte -> "%02x".format(byte.toInt() and 0xff) } +
+            if (size > limit) " ..." else ""
     }
 }

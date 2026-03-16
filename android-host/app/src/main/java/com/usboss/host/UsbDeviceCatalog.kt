@@ -93,7 +93,9 @@ object UsbDeviceCatalog {
         return try {
             val outputEndpoint = usbInterface.findInterruptEndpoint(UsbConstants.USB_DIR_OUT)
             HostRuntime.debug(
-                "Claimed ${candidate.systemPath}: input=${inputEndpoint.maxPacketSize} output=${outputEndpoint?.maxPacketSize ?: 0}",
+                "Claimed ${candidate.systemPath}: class=${usbInterface.interfaceClass} " +
+                    "subclass=${usbInterface.interfaceSubclass} protocol=${usbInterface.interfaceProtocol} " +
+                    "input=${inputEndpoint.maxPacketSize} output=${outputEndpoint?.maxPacketSize ?: 0}",
             )
             when (candidate.transport) {
                 Protocol.TRANSPORT_XINPUT_360 -> {

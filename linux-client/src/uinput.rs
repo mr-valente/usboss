@@ -101,6 +101,8 @@ struct InputEvent {
 
 pub struct XInput360Device {
     file: File,
+    input_reports_seen: usize,
+    unknown_reports_seen: usize,
 }
 
 impl XInput360Device {
@@ -168,17 +170,41 @@ impl XInput360Device {
         ioctl_none(fd, UI_DEV_CREATE)?;
         thread::sleep(Duration::from_millis(50));
 
-        Ok(Self { file })
+        Ok(Self {
+            file,
+            input_reports_seen: 0,
+            unknown_reports_seen: 0,
+        })
     }
 
     pub fn send_input_report(&mut self, data: &[u8]) -> io::Result<()> {
-        let state = match parse_xinput360_report(data) {
-            Some(state) => state,
+        self.input_reports_seen += 1;
+        let parsed = match parse_xinput360_report(data) {
+            Some(parsed) => parsed,
             None => {
-                debug(&format!("Ignoring short XInput report ({} bytes)", data.len()));
+                self.unknown_reports_seen += 1;
+                if should_log_report(self.unknown_reports_seen) {
+                    debug(&format!(
+                        "Ignoring unrecognized XInput report #{} ({} bytes): {}",
+                        self.input_reports_seen,
+                        data.len(),
+                        hex_snippet(data, 24)
+                    ));
+                }
                 return Ok(());
             }
         };
+        if should_log_report(self.input_reports_seen) {
+            debug(&format!(
+                "Accepted XInput report #{} as {} ({} bytes, payload offset {}): {}",
+                self.input_reports_seen,
+                parsed.layout,
+                data.len(),
+                parsed.payload_offset,
+                hex_snippet(data, 24)
+            ));
+        }
+        let state = parsed.state;
 
         self.emit_key(BTN_START, state.start)?;
         self.emit_key(BTN_SELECT, state.back)?;
@@ -255,13 +281,44 @@ struct XInput360State {
     ry: i32,
 }
 
-fn parse_xinput360_report(data: &[u8]) -> Option<XInput360State> {
-    if data.len() < 14 {
+struct ParsedXInput360Report {
+    layout: &'static str,
+    payload_offset: usize,
+    state: XInput360State,
+}
+
+fn parse_xinput360_report(data: &[u8]) -> Option<ParsedXInput360Report> {
+    if let Some(state) = parse_xinput360_payload(data, 0) {
+        return Some(ParsedXInput360Report {
+            layout: "wired",
+            payload_offset: 0,
+            state,
+        });
+    }
+
+    // Upstream xpad treats Xbox 360 wireless class packets as having a 4-byte
+    // wrapper, with the actual controller state starting at byte 4.
+    if data.len() >= 18 && (data[1] & 0x01) != 0 {
+        if let Some(state) = parse_xinput360_payload(data, 4) {
+            return Some(ParsedXInput360Report {
+                layout: "wireless-wrapped",
+                payload_offset: 4,
+                state,
+            });
+        }
+    }
+
+    None
+}
+
+fn parse_xinput360_payload(data: &[u8], offset: usize) -> Option<XInput360State> {
+    let payload = data.get(offset..)?;
+    if payload.len() < 14 || payload[0] != 0x00 {
         return None;
     }
 
-    let buttons = data[2];
-    let buttons_hi = data[3];
+    let buttons = payload[2];
+    let buttons_hi = payload[3];
 
     Some(XInput360State {
         hat_x: pressed(buttons, 0x08) - pressed(buttons, 0x04),
@@ -277,12 +334,12 @@ fn parse_xinput360_report(data: &[u8]) -> Option<XInput360State> {
         b: bit(buttons_hi, 0x20),
         x: bit(buttons_hi, 0x40),
         y: bit(buttons_hi, 0x80),
-        lt: data[4] as i32,
-        rt: data[5] as i32,
-        lx: read_i16(data, 6) as i32,
-        ly: invert_axis(read_i16(data, 8)),
-        rx: read_i16(data, 10) as i32,
-        ry: invert_axis(read_i16(data, 12)),
+        lt: payload[4] as i32,
+        rt: payload[5] as i32,
+        lx: read_i16(payload, 6) as i32,
+        ly: invert_axis(read_i16(payload, 8)),
+        rx: read_i16(payload, 10) as i32,
+        ry: invert_axis(read_i16(payload, 12)),
     })
 }
 
@@ -326,6 +383,23 @@ fn invert_axis(value: i16) -> i32 {
     } else {
         -(value as i32)
     }
+}
+
+fn should_log_report(report_count: usize) -> bool {
+    report_count <= 12 || report_count % 100 == 0
+}
+
+fn hex_snippet(data: &[u8], limit: usize) -> String {
+    let mut snippet = data
+        .iter()
+        .take(limit)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if data.len() > limit {
+        snippet.push_str(" ...");
+    }
+    snippet
 }
 
 fn ioctl_int(fd: i32, request: libc::c_ulong, value: i32) -> io::Result<()> {

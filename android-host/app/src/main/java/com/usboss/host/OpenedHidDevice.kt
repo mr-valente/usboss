@@ -15,6 +15,7 @@ import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val USB_RECIP_INTERFACE = 0x01
+private const val HID_REPORT_LOG_LIMIT = 8
 
 class OpenedHidDevice(
     private val candidate: UsbCandidate,
@@ -65,11 +66,13 @@ class OpenedHidDevice(
 
         val packetSize = inputEndpoint.maxPacketSize.coerceAtLeast(8)
         val buffer = ByteBuffer.allocateDirect(packetSize)
+        var reportCount = 0
+        var zeroLengthCompletions = 0
 
         try {
             while (isActive && !closed.get()) {
                 buffer.clear()
-                if (!request.queue(buffer)) {
+                if (!queueInterruptRequest(request, buffer, packetSize)) {
                     throw IOException("Failed to queue USB interrupt read")
                 }
 
@@ -82,11 +85,23 @@ class OpenedHidDevice(
 
                 val size = buffer.position()
                 if (size <= 0) {
+                    zeroLengthCompletions += 1
+                    if (zeroLengthCompletions <= HID_REPORT_LOG_LIMIT) {
+                        HostRuntime.debug(
+                            "HID read for ${candidate.systemPath} completed with a zero reported length (count=$zeroLengthCompletions)",
+                        )
+                    }
                     continue
                 }
                 val data = ByteArray(size)
                 buffer.flip()
                 buffer.get(data)
+                reportCount += 1
+                if (shouldLogReport(reportCount)) {
+                    HostRuntime.debug(
+                        "HID report #$reportCount for ${candidate.systemPath} (${data.size} bytes): ${data.hexSnippet()}",
+                    )
+                }
                 onReport(data)
             }
         } catch (error: Throwable) {
@@ -175,5 +190,22 @@ class OpenedHidDevice(
         Protocol.REPORT_TYPE_OUTPUT -> 2
         Protocol.REPORT_TYPE_FEATURE -> 3
         else -> 3
+    }
+
+    @Suppress("DEPRECATION")
+    private fun queueInterruptRequest(
+        request: UsbRequest,
+        buffer: ByteBuffer,
+        length: Int,
+    ): Boolean = request.queue(buffer, length)
+
+    private fun shouldLogReport(reportCount: Int): Boolean {
+        return reportCount <= HID_REPORT_LOG_LIMIT || reportCount % 100 == 0
+    }
+
+    private fun ByteArray.hexSnippet(limit: Int = 24): String {
+        return take(limit)
+            .joinToString(" ") { byte -> "%02x".format(byte.toInt() and 0xff) } +
+            if (size > limit) " ..." else ""
     }
 }

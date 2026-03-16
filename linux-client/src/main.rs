@@ -21,7 +21,7 @@ use protocol::{
 use uhid::UhidDevice;
 use uinput::XInput360Device;
 
-const BUILD_FINGERPRINT: &str = "monitor-sessions-v3-2026-03-16";
+const BUILD_FINGERPRINT: &str = "xinput-report-debug-v1-2026-03-16";
 
 fn main() {
     if let Err(error) = run() {

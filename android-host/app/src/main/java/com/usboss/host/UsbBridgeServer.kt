@@ -153,6 +153,7 @@ class UsbBridgeServer(
 
         var openedDevice: OpenedUsbDevice? = null
         var inputPump: Job? = null
+        var forwardedReportCount = 0
 
         try {
             session@ while (scope.isActive && !socket.isClosed) {
@@ -204,6 +205,7 @@ class UsbBridgeServer(
                         }
                         openedDevice = device
                         val spec = device.protocolSpec()
+                        forwardedReportCount = 0
 
                         writerMutex.withLock {
                             Protocol.write(output, Protocol.Message.OpenDeviceAck(spec))
@@ -214,6 +216,13 @@ class UsbBridgeServer(
                             device.startInputPump(
                                 scope = this,
                                 onReport = { report ->
+                                    forwardedReportCount += 1
+                                    if (forwardedReportCount <= 12 || forwardedReportCount % 100 == 0) {
+                                        HostRuntime.debug(
+                                            "Session $sessionId forwarding input report #$forwardedReportCount " +
+                                                "for ${device.systemPath} (${report.size} bytes)",
+                                        )
+                                    }
                                     launch {
                                         writerMutex.withLock {
                                             Protocol.write(
