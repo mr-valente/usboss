@@ -73,7 +73,9 @@ class OpenedHidDevice(
                     throw IOException("Failed to queue USB interrupt read")
                 }
 
-                val completed = connection.requestWait(1_000) ?: continue
+                // A controller can sit idle for long stretches, so wait for the next packet
+                // instead of treating a timed wait as a fatal transport error.
+                val completed = connection.requestWait() ?: continue
                 if (completed != request) {
                     continue
                 }

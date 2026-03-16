@@ -224,7 +224,7 @@ class UsbBridgeServer(
                                     }
                                 },
                                 onError = { error ->
-                                    onError(error.message ?: "USB read failed")
+                                    onError(error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName)
                                     onStatus("USB device disconnected; waiting for Linux to reconnect")
                                     runCatching { socket.close() }
                                 },
