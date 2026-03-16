@@ -125,7 +125,6 @@ class UsbBridgeServer(
                     handleClient(sessionId, socket)
                 } catch (error: Throwable) {
                     onError(error.message ?: "Client session failed")
-                    onStatus("Client disconnected")
                 } finally {
                     runCatching { socket.close() }
                     removeSession(sessionId)
@@ -136,7 +135,6 @@ class UsbBridgeServer(
 
     private suspend fun handleClient(sessionId: Long, socket: Socket) {
         socket.tcpNoDelay = true
-        onStatus("Client connected: ${socket.inetAddress.hostAddress}")
 
         val input = BufferedInputStream(socket.getInputStream())
         val output = BufferedOutputStream(socket.getOutputStream())
@@ -333,13 +331,14 @@ class UsbBridgeServer(
                 }
             }
         } catch (_: EOFException) {
-            HostRuntime.note("Linux client session $sessionId disconnected")
-            onStatus("Client disconnected")
+            HostRuntime.note(
+                "Linux client session $sessionId disconnected (${sessionRoleLabel(sessionId)})",
+            )
         } finally {
             HostRuntime.debug("Cleaning up session $sessionId")
             inputPump?.cancelAndJoin()
             openedDevice?.close()
-            releaseDevice(sessionId)
+            releaseDevice(sessionId, updatePresentation = false)
         }
     }
 
@@ -390,10 +389,11 @@ class UsbBridgeServer(
             sessions[id] = ClientSession(
                 socket = socket,
                 clientLabel = socket.inetAddress.hostAddress.orEmpty(),
+                role = SessionRole.Monitoring,
             )
             id
         }
-        updateConnectedClientSummary()
+        updateSessionPresentation()
         return sessionId
     }
 
@@ -401,7 +401,7 @@ class UsbBridgeServer(
         synchronized(sessionLock) {
             sessions.remove(sessionId)
         }
-        updateConnectedClientSummary()
+        updateSessionPresentation()
     }
 
     private fun tryReserveDevice(sessionId: Long, systemPath: String): Boolean {
@@ -412,37 +412,96 @@ class UsbBridgeServer(
             if (alreadyInUse) {
                 false
             } else {
-                sessions[sessionId]?.activeDeviceSystemPath = systemPath
+                sessions[sessionId]?.let { session ->
+                    session.activeDeviceSystemPath = systemPath
+                    session.role = SessionRole.Forwarding
+                }
                 true
             }
         }
-        updateConnectedClientSummary()
+        if (reserved) {
+            HostRuntime.debug("Session $sessionId role changed to forwarding for $systemPath")
+        }
+        updateSessionPresentation()
         return reserved
     }
 
-    private fun releaseDevice(sessionId: Long) {
-        synchronized(sessionLock) {
-            sessions[sessionId]?.activeDeviceSystemPath = null
+    private fun releaseDevice(sessionId: Long, updatePresentation: Boolean = true) {
+        val changed = synchronized(sessionLock) {
+            sessions[sessionId]?.let { session ->
+                val hadDevice = session.activeDeviceSystemPath != null
+                val roleChanged = session.role != SessionRole.Monitoring
+                session.activeDeviceSystemPath = null
+                session.role = SessionRole.Monitoring
+                hadDevice || roleChanged
+            } ?: false
         }
-        updateConnectedClientSummary()
+        if (changed) {
+            HostRuntime.debug("Session $sessionId role changed to monitoring")
+        }
+        if (updatePresentation) {
+            updateSessionPresentation()
+        }
     }
 
-    private fun updateConnectedClientSummary() {
-        val summary = synchronized(sessionLock) {
-            when (val activeSessions = sessions.size) {
-                0 -> null
-                1 -> sessions.values.first().clientLabel
-                else -> {
-                    val labels = sessions.values.map { it.clientLabel }.distinct()
-                    if (labels.size == 1) {
-                        "${labels.first()} ($activeSessions sessions)"
-                    } else {
-                        "$activeSessions clients"
-                    }
-                }
-            }
+    private fun sessionRoleLabel(sessionId: Long): String {
+        return synchronized(sessionLock) {
+            sessions[sessionId]?.role?.label ?: "unknown"
         }
-        onClientChanged(summary)
+    }
+
+    private fun updateSessionPresentation() {
+        val presentation = synchronized(sessionLock) {
+            val monitoring = sessions.values.filter { it.role == SessionRole.Monitoring }
+            val forwarding = sessions.values.filter { it.role == SessionRole.Forwarding }
+            SessionPresentation(
+                summary = summarizeSessions(monitoring, forwarding),
+                status = summarizeStatus(monitoring, forwarding),
+                monitoringCount = monitoring.size,
+                forwardingCount = forwarding.size,
+            )
+        }
+        HostRuntime.debug(
+            "Session presentation updated: monitoring=${presentation.monitoringCount} " +
+                "forwarding=${presentation.forwardingCount} summary=${presentation.summary ?: "none"} " +
+                "status=${presentation.status ?: "preserve"}",
+        )
+        onClientChanged(presentation.summary)
+        presentation.status?.let(onStatus)
+    }
+
+    private fun summarizeSessions(
+        monitoring: List<ClientSession>,
+        forwarding: List<ClientSession>,
+    ): String? {
+        return when {
+            forwarding.isNotEmpty() && monitoring.isNotEmpty() ->
+                "${describeSessionGroup("Forwarding to", forwarding)}; monitoring active (${monitoring.size})"
+            forwarding.isNotEmpty() -> describeSessionGroup("Forwarding to", forwarding)
+            monitoring.isNotEmpty() -> describeSessionGroup("Monitoring from", monitoring)
+            else -> null
+        }
+    }
+
+    private fun summarizeStatus(
+        monitoring: List<ClientSession>,
+        forwarding: List<ClientSession>,
+    ): String? {
+        return when {
+            forwarding.isNotEmpty() -> null
+            monitoring.isNotEmpty() -> describeSessionGroup("Linux monitor connected from", monitoring)
+            else -> "Listening on ${Protocol.DEFAULT_TCP_PORT}"
+        }
+    }
+
+    private fun describeSessionGroup(prefix: String, sessions: List<ClientSession>): String {
+        val labels = sessions.map { it.clientLabel }.distinct()
+        return when {
+            sessions.isEmpty() -> "$prefix nobody"
+            labels.size == 1 && sessions.size == 1 -> "$prefix ${labels.first()}"
+            labels.size == 1 -> "$prefix ${labels.first()} (${sessions.size} sessions)"
+            else -> "$prefix ${labels.size} clients (${sessions.size} sessions)"
+        }
     }
 
     private fun snapshotSessions(): List<ClientSession> {
@@ -465,5 +524,18 @@ class UsbBridgeServer(
         val socket: Socket,
         val clientLabel: String,
         var activeDeviceSystemPath: String? = null,
+        var role: SessionRole = SessionRole.Monitoring,
     )
+
+    private data class SessionPresentation(
+        val summary: String?,
+        val status: String?,
+        val monitoringCount: Int,
+        val forwardingCount: Int,
+    )
+
+    private enum class SessionRole(val label: String) {
+        Monitoring("monitoring"),
+        Forwarding("forwarding"),
+    }
 }

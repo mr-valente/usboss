@@ -261,7 +261,7 @@ private fun SummaryCard(state: HostUiState) {
             Text("TCP stream port: ${state.tcpPort}", color = Color(0xFFD5D9E0))
             Text("Detected controller interfaces: ${state.devices.size}", color = Color(0xFFD5D9E0))
             Text(
-                "Connected client(s): ${state.connectedClient ?: "none"}",
+                "Linux session state: ${state.connectedClient ?: "none"}",
                 color = Color(0xFFD5D9E0),
             )
             Text(
