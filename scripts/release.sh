@@ -39,6 +39,38 @@ die() {
   exit 1
 }
 
+release_user() {
+  if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    printf '%s\n' "${SUDO_USER}"
+  else
+    id -un
+  fi
+}
+
+release_group() {
+  if [[ "$(id -u)" -eq 0 && -n "${SUDO_GID:-}" ]]; then
+    printf '%s\n' "${SUDO_GID}"
+  else
+    id -g
+  fi
+}
+
+release_uid() {
+  if [[ "$(id -u)" -eq 0 && -n "${SUDO_UID:-}" ]]; then
+    printf '%s\n' "${SUDO_UID}"
+  else
+    id -u
+  fi
+}
+
+run_as_release_user() {
+  if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    sudo -H -u "${SUDO_USER}" env "PATH=${PATH}" "$@"
+  else
+    "$@"
+  fi
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
@@ -53,9 +85,9 @@ normalize_version() {
 }
 
 git_clean() {
-  git diff --quiet &&
-    git diff --cached --quiet &&
-    [[ -z "$(git ls-files --others --exclude-standard)" ]]
+  run_as_release_user git diff --quiet &&
+    run_as_release_user git diff --cached --quiet &&
+    [[ -z "$(run_as_release_user git ls-files --others --exclude-standard)" ]]
 }
 
 main() {
@@ -110,13 +142,17 @@ main() {
   root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   cd "$root_dir"
 
+  local actor_user
+  actor_user="$(release_user)"
+
   require_cmd git
   require_cmd tar
   require_cmd sha256sum
   require_cmd docker
 
   if [[ "$assets_only" -eq 0 ]]; then
-    require_cmd gh
+    run_as_release_user bash -lc 'command -v gh >/dev/null 2>&1' ||
+      die "required command not found for release user ${actor_user}: gh"
   fi
 
   if [[ "$allow_dirty" -eq 0 ]] && ! git_clean; then
@@ -124,7 +160,7 @@ main() {
   fi
 
   local branch
-  branch="$(git rev-parse --abbrev-ref HEAD)"
+  branch="$(run_as_release_user git rev-parse --abbrev-ref HEAD)"
   if [[ "$assets_only" -eq 0 && "$branch" == "HEAD" ]]; then
     die "detached HEAD detected. Check out the release branch/commit normally before creating a release."
   fi
@@ -182,6 +218,10 @@ Notes:
 EOF
   fi
 
+  if [[ "$(id -u)" -eq 0 && -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
+    chown -R "$(release_uid):$(release_group)" "$release_dir"
+  fi
+
   echo "==> Release assets ready:"
   ls -lh "$release_dir"
 
@@ -192,29 +232,30 @@ EOF
     exit 0
   fi
 
-  gh auth status >/dev/null
+  echo "==> Using release user: $actor_user"
+  run_as_release_user gh auth status >/dev/null
 
-  if gh release view "$version" >/dev/null 2>&1; then
+  if run_as_release_user gh release view "$version" >/dev/null 2>&1; then
     die "GitHub release $version already exists. Delete/edit it first or choose a different version."
   fi
 
-  if git rev-parse --verify "refs/tags/$version" >/dev/null 2>&1; then
+  if run_as_release_user git rev-parse --verify "refs/tags/$version" >/dev/null 2>&1; then
     local tagged_commit
     local head_commit
-    tagged_commit="$(git rev-list -n 1 "$version")"
-    head_commit="$(git rev-parse HEAD)"
+    tagged_commit="$(run_as_release_user git rev-list -n 1 "$version")"
+    head_commit="$(run_as_release_user git rev-parse HEAD)"
     [[ "$tagged_commit" == "$head_commit" ]] || die "tag $version already exists but does not point at HEAD."
     echo "==> Reusing existing local tag $version"
   else
     echo "==> Creating annotated tag $version"
-    git tag -a "$version" -m "USBoss $version"
+    run_as_release_user git tag -a "$version" -m "USBoss $version"
   fi
 
   echo "==> Pushing branch $branch"
-  git push origin "$branch"
+  run_as_release_user git push origin "$branch"
 
   echo "==> Pushing tag $version"
-  git push origin "$version"
+  run_as_release_user git push origin "$version"
 
   local -a release_args=(
     release create "$version"
@@ -232,7 +273,7 @@ EOF
   fi
 
   echo "==> Creating GitHub release $version"
-  gh "${release_args[@]}"
+  run_as_release_user gh "${release_args[@]}"
 
   echo
   if [[ "$publish" -eq 0 ]]; then

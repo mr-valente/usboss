@@ -19,6 +19,29 @@ By default, that script will:
 
 That default is intentional. A draft release gives you one last chance to inspect the notes and assets before publishing.
 
+## Running under sudo
+
+If your Docker setup requires `sudo`, the helper now supports that cleanly:
+
+```bash
+sudo ./scripts/release.sh v0.1.0
+```
+
+When run this way, the script will:
+
+- run the Docker build as root
+- package the release assets
+- hand ownership of `release-assets/v0.1.0/` back to your original user
+- run `git` and `gh` as the original invoking user from `SUDO_USER`
+
+That means your GitHub login should remain the normal one you already configured as `nicholas`.
+
+Important:
+
+- make sure you already ran `gh auth login` as your normal user before using `sudo`
+- the script expects `sudo` to preserve `SUDO_USER`, which is the normal behavior
+- if possible, adding your user to the `docker` group is still the cleaner long-term setup
+
 ## Prerequisites
 
 Install and authenticate:
@@ -95,7 +118,7 @@ That stops before any `git push`, tag push, or GitHub release creation.
 For your current state, I recommend:
 
 ```bash
-./scripts/release.sh v0.1.0
+sudo ./scripts/release.sh v0.1.0
 ```
 
 Then:
