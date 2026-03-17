@@ -4,7 +4,11 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -19,7 +23,9 @@ object HostRuntime {
     const val ACTION_USB_PERMISSION = "com.usboss.host.USB_PERMISSION"
     private const val TAG = "USBoss"
     private const val PREFS_NAME = "usboss"
+    private const val KEY_START_ON_BOOT = "start_on_boot"
     private const val KEY_VERBOSE_LOGGING = "verbose_logging"
+    private const val REFRESH_LOOP_MS = 4_000L
     private const val MAX_RECENT_EVENTS = 80
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -36,23 +42,30 @@ object HostRuntime {
     @Volatile
     private var initialized = false
 
+    @Volatile
+    private var refreshLoopJob: Job? = null
+
+    @Volatile
+    private var lastAdvertisedPaths: Set<String> = emptySet()
+
     fun initialize(context: Context) {
         ensureInitialized(context)
     }
 
     fun start(context: Context) {
         ensureInitialized(context)
+        val appContext = context.applicationContext
         updateError(null)
         note("Starting host service", addToRecent = true)
         refreshDevices(context)
         requestPermissions(context)
         if (server != null) {
             mutableState.update { it.copy(serviceRunning = true) }
+            startRefreshLoop(appContext)
             debug("Host service was already running")
             return
         }
 
-        val applicationContext = context.applicationContext
         server = UsbBridgeServer(
             scope = scope,
             onStatus = { updateStatus(it) },
@@ -66,10 +79,13 @@ object HostRuntime {
             openDevice = { id ->
                 val candidate = candidatesById[id]
                     ?: throw IllegalArgumentException("Unknown USB candidate id $id")
-                UsbDeviceCatalog.open(applicationContext, candidate)
+                UsbDeviceCatalog.open(appContext, candidate)
             },
         ).also { it.start() }
 
+        val currentPaths = state.value.devices.map(UsbCandidate::systemPath).toSet()
+        lastAdvertisedPaths = currentPaths
+        server?.onAvailableDevicesChanged(currentPaths)
         mutableState.update {
             it.copy(
                 serviceRunning = true,
@@ -77,13 +93,16 @@ object HostRuntime {
                 serverIp = findLocalIpv4Address().orEmpty(),
             )
         }
+        startRefreshLoop(appContext)
         note("Host is now listening for Linux clients", addToRecent = true)
     }
 
     fun stop() {
         note("Stopping host service", addToRecent = true)
+        stopRefreshLoop()
         server?.stop()
         server = null
+        lastAdvertisedPaths = emptySet()
         mutableState.update {
             it.copy(
                 serviceRunning = false,
@@ -98,11 +117,16 @@ object HostRuntime {
         runCatching {
             val devices = UsbDeviceCatalog.enumerate(context)
             candidatesById = devices.associateBy { it.id }
-            server?.onAvailableDevicesChanged(devices.map(UsbCandidate::systemPath).toSet())
-            mutableState.update {
-                it.copy(
+            val availablePaths = devices.map(UsbCandidate::systemPath).toSet()
+            if (availablePaths != lastAdvertisedPaths) {
+                lastAdvertisedPaths = availablePaths
+                server?.onAvailableDevicesChanged(availablePaths)
+            }
+            val serverIp = findLocalIpv4Address().orEmpty()
+            mutableState.update { current ->
+                current.copy(
                     devices = devices,
-                    serverIp = findLocalIpv4Address().orEmpty(),
+                    serverIp = serverIp,
                     lastError = null,
                 )
             }
@@ -153,6 +177,25 @@ object HostRuntime {
             if (enabled) "Verbose logging enabled" else "Verbose logging disabled",
             addToRecent = true,
         )
+    }
+
+    fun setStartOnBoot(context: Context, enabled: Boolean) {
+        ensureInitialized(context)
+        prefs(context).edit().putBoolean(KEY_START_ON_BOOT, enabled).apply()
+        mutableState.update { it.copy(startOnBoot = enabled) }
+        note(
+            if (enabled) {
+                "USBoss will start automatically after boot and app updates"
+            } else {
+                "USBoss will stay manual after boot"
+            },
+            addToRecent = true,
+        )
+    }
+
+    fun shouldStartOnBoot(context: Context): Boolean {
+        ensureInitialized(context)
+        return prefs(context).getBoolean(KEY_START_ON_BOOT, false)
     }
 
     fun clearRecentEvents() {
@@ -219,8 +262,15 @@ object HostRuntime {
             if (initialized) {
                 return
             }
-            val verboseLogging = prefs(context).getBoolean(KEY_VERBOSE_LOGGING, false)
-            mutableState.update { it.copy(verboseLogging = verboseLogging) }
+            val sharedPrefs = prefs(context)
+            val verboseLogging = sharedPrefs.getBoolean(KEY_VERBOSE_LOGGING, false)
+            val startOnBoot = sharedPrefs.getBoolean(KEY_START_ON_BOOT, false)
+            mutableState.update {
+                it.copy(
+                    verboseLogging = verboseLogging,
+                    startOnBoot = startOnBoot,
+                )
+            }
             initialized = true
             note(
                 if (verboseLogging) {
@@ -231,6 +281,32 @@ object HostRuntime {
                 addToRecent = verboseLogging,
             )
         }
+    }
+
+    private fun startRefreshLoop(context: Context) {
+        if (refreshLoopJob?.isActive == true) {
+            return
+        }
+        refreshLoopJob = scope.launch {
+            while (isActive && state.value.serviceRunning) {
+                delay(REFRESH_LOOP_MS)
+                if (!state.value.serviceRunning) {
+                    break
+                }
+                runCatching {
+                    refreshDevices(context)
+                }.onFailure { error ->
+                    logError("Background USB refresh failed", error)
+                }
+            }
+        }
+        debug("Started background USB refresh loop")
+    }
+
+    private fun stopRefreshLoop() {
+        refreshLoopJob?.cancel()
+        refreshLoopJob = null
+        debug("Stopped background USB refresh loop")
     }
 
     private fun prefs(context: Context) =

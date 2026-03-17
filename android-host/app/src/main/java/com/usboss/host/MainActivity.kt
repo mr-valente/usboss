@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
                 onStop = { dispatchServiceAction(this, UsbBossService.ACTION_STOP) },
                 onRefresh = { HostRuntime.refreshDevices(this) },
                 onGrant = { HostRuntime.requestPermissions(this) },
+                onToggleStartOnBoot = { HostRuntime.setStartOnBoot(this, !state.startOnBoot) },
                 onToggleVerbose = { HostRuntime.setVerboseLogging(this, !state.verboseLogging) },
                 onClearEvents = { HostRuntime.clearRecentEvents() },
             )
@@ -72,6 +73,7 @@ private fun UsbBossScreen(
     onStop: () -> Unit,
     onRefresh: () -> Unit,
     onGrant: () -> Unit,
+    onToggleStartOnBoot: () -> Unit,
     onToggleVerbose: () -> Unit,
     onClearEvents: () -> Unit,
 ) {
@@ -113,6 +115,7 @@ private fun UsbBossScreen(
                     onStop = onStop,
                     onRefresh = onRefresh,
                     onGrant = onGrant,
+                    onToggleStartOnBoot = onToggleStartOnBoot,
                     onToggleVerbose = onToggleVerbose,
                     onClearEvents = onClearEvents,
                 )
@@ -176,6 +179,7 @@ private fun ActionRow(
     onStop: () -> Unit,
     onRefresh: () -> Unit,
     onGrant: () -> Unit,
+    onToggleStartOnBoot: () -> Unit,
     onToggleVerbose: () -> Unit,
     onClearEvents: () -> Unit,
 ) {
@@ -214,9 +218,17 @@ private fun ActionRow(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Button(onClick = onToggleStartOnBoot, modifier = Modifier.weight(1f)) {
+                Text(if (state.startOnBoot) "Boot: On" else "Boot: Off")
+            }
             Button(onClick = onToggleVerbose, modifier = Modifier.weight(1f)) {
                 Text(if (state.verboseLogging) "Verbose: On" else "Verbose: Off")
             }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             Button(
                 onClick = onClearEvents,
                 enabled = state.recentEvents.isNotEmpty(),
@@ -265,11 +277,19 @@ private fun SummaryCard(state: HostUiState) {
                 color = Color(0xFFD5D9E0),
             )
             Text(
+                "Start on boot: ${if (state.startOnBoot) "enabled" else "disabled"}",
+                color = Color(0xFFD5D9E0),
+            )
+            Text(
                 "Attach mode on Linux will keep retrying and reconnect automatically.",
                 color = Color(0xFF9FA7B5),
             )
             Text(
                 "Use `attach-all` for seamless multiplayer. `attach --device-id` is still available for manual pinning.",
+                color = Color(0xFF9FA7B5),
+            )
+            Text(
+                "When boot start is enabled, USBoss will relaunch after device restarts and app updates.",
                 color = Color(0xFF9FA7B5),
             )
             Text(

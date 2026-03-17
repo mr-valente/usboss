@@ -110,18 +110,18 @@ class UsbBossService : Service() {
             when (intent.action) {
                 HostRuntime.ACTION_USB_PERMISSION -> {
                     HostRuntime.refreshDevices(context)
-                    HostRuntime.updateStatus("USB permission updated")
+                    HostRuntime.note("USB permission updated", addToRecent = true)
                 }
 
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
                     HostRuntime.refreshDevices(context)
                     HostRuntime.requestPermissions(context)
-                    HostRuntime.updateStatus("USB device attached")
+                    HostRuntime.note("USB device attached", addToRecent = true)
                 }
 
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     HostRuntime.refreshDevices(context)
-                    HostRuntime.updateStatus("USB device detached")
+                    HostRuntime.note("USB device detached", addToRecent = true)
                 }
             }
         }
