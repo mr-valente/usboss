@@ -94,6 +94,31 @@ sudo build-artifacts/linux/usboss-client attach-all --host SHIELD_IP:35355 --ver
 
 If you are using Moonlight and Sunshine, avoid double input by disabling duplicate gamepad forwarding on one side of the session.
 
+## Linux Kernel Requirements
+
+`USBoss` creates virtual controllers on Linux. The required kernel support is:
+
+- `uinput` for Xbox 360 style XInput devices
+- `uhid` for HID devices
+
+For the currently tested 8BitDo Ultimate 2C 2.4G XInput setup, `uinput` is the critical one. `uhid` is still recommended so HID controllers also work.
+User-space apps such as Steam will also rely on the normal Linux input stack, typically `evdev`, which is already enabled on most distributions.
+
+Load them if needed:
+
+```bash
+sudo modprobe uinput
+sudo modprobe uhid
+```
+
+Verify the device nodes exist:
+
+```bash
+ls -l /dev/uinput /dev/uhid
+```
+
+`USBoss` does not require `vhci-hcd`, `xpad`, `usbip`, or direct access to any physical controller device on the Linux host.
+
 ## Debugging
 
 Enable `Verbose` in the Android app and run the Linux client with `--verbose`.
