@@ -1,336 +1,126 @@
 # USBoss
 
-`USBoss` is a clean-room USB host bridge for one narrow job:
+`USBoss` is a USB controller bridge between Android and Linux.
 
-- Android device acts as the USB host.
-- A Linux machine recreates the controller through:
-  - `/dev/uhid` for HID devices
-  - `/dev/uinput` for Xbox 360 style XInput devices
-- The transport is local-LAN only and optimized for low-latency controller traffic.
+It lets an Android device act as the USB host, forwards supported controller traffic over the local network, and recreates the controller on Linux as a local input device.
 
-This repo is intentionally not a generic VirtualHere clone. It targets USB HID game controllers and Xbox 360 style XInput controllers that Android can open through the public USB host APIs.
+- Android host app
+- Linux client
+- HID support through `/dev/uhid`
+- Xbox 360 style XInput support through `/dev/uinput`
+- Local-network operation with automatic reconnect support
 
-## Important caveat for your 8BitDo setup
+`USBoss` is well suited to setups like an NVIDIA Shield or Android phone/tablet hosting a USB controller dongle and forwarding it to a Linux gaming or streaming machine.
 
-Many 8BitDo dongles can expose different USB modes. `USBoss` now prefers Xbox 360 style XInput interfaces when it sees them and still supports HID interfaces.
+Tested working with:
 
-- If the dongle shows up as `XInput 360` in `USBoss`, that is the intended mode for your Shield use case.
-- If it shows up as `HID`, USBoss can still forward it, but that is less valuable on a Shield that already handles D-input well.
-- If it does not appear, the dongle is likely using a vendor-specific mode that is not Xbox 360 style XInput.
+- NVIDIA Shield / Android TV as host
+- Linux as client
+- 8BitDo Ultimate 2C Wireless Controller via 2.4G dongle in XInput mode
 
-Current XInput scope:
+## How It Works
 
-- best-effort Xbox 360 style XInput support
-- not a high-confidence implementation for Xbox One / GIP devices
-- no rumble on the Linux virtual XInput path yet
+1. The Android app enumerates supported USB controller interfaces and opens them through the Android USB host APIs.
+2. The Linux client connects over TCP and attaches to one or more advertised controllers.
+3. Linux sees a local virtual controller created through `uinput` or `uhid`.
 
-## Repository layout
+## Current Status
 
-- [android-host](/Users/nick.valente/.dev/usboss/android-host): Android APK project for the Shield host.
-- [linux-client](/Users/nick.valente/.dev/usboss/linux-client): Rust client that creates a virtual HID or XInput-style device on Linux.
-- [docs/PROTOCOL.md](/Users/nick.valente/.dev/usboss/docs/PROTOCOL.md): Wire format notes.
-- [docs/BUILD_WITH_DOCKER.md](/Users/nick.valente/.dev/usboss/docs/BUILD_WITH_DOCKER.md): Containerized build instructions.
-- [docs/RELEASING.md](/Users/nick.valente/.dev/usboss/docs/RELEASING.md): Docker-based GitHub release flow.
-- [docs/99-usboss-uhid.rules](/Users/nick.valente/.dev/usboss/docs/99-usboss-uhid.rules): Optional udev rule for `/dev/uhid` and `/dev/uinput`.
-- [docs/usboss-client.service](/Users/nick.valente/.dev/usboss/docs/usboss-client.service): Optional systemd service template.
-
-## Prerequisites
-
-### Linux client
-
-- Linux kernel with `uhid` and `uinput` enabled.
-- Rust stable.
-- Permission to open `/dev/uhid` and `/dev/uinput`.
-
-Quick install example on Debian/Ubuntu:
-
-```bash
-sudo apt update
-sudo apt install -y build-essential pkg-config curl
-curl https://sh.rustup.rs -sSf | sh
-source "$HOME/.cargo/env"
-```
-
-### Android build host
-
-You said you will build in Linux, so use either Android Studio or a system Gradle install plus the Android SDK.
-
-- JDK 17
-- Gradle 8.7+ or Android Studio Iguana/Koala or newer
-- Android SDK Platform 35
-- Android Build-Tools 35.x
-- Platform tools (`adb`)
-
-Example setup with the command-line SDK tools:
-
-```bash
-export ANDROID_SDK_ROOT="$HOME/Android/Sdk"
-yes | sdkmanager --licenses
-sdkmanager \
-  "platform-tools" \
-  "platforms;android-35" \
-  "build-tools;35.0.0"
-```
-
-Note:
-
-- This repo does not include a Gradle wrapper because I could not generate it in the current environment.
-- If you want one, run `gradle wrapper` inside [android-host](/Users/nick.valente/.dev/usboss/android-host) after installing Gradle.
+- Supports Android host to Linux client controller forwarding
+- Prefers Xbox 360 style XInput when available
+- Also supports USB HID controllers
+- Supports long-running attach mode and `attach-all` for multi-controller setups
+- Rumble is not implemented yet on the Linux XInput path
 
 ## Build
 
-### 1. Build the Linux client
+Docker is the recommended build path.
+
+```bash
+chmod +x docker/run-build.sh
+./docker/run-build.sh
+```
+
+Build outputs:
+
+- `build-artifacts/android/app-debug.apk`
+- `build-artifacts/linux/usboss-client`
+
+Native builds are also supported:
 
 ```bash
 cd linux-client
 cargo build --release
-```
 
-Binary output:
-
-- `linux-client/target/release/usboss-client`
-
-### 2. Build the Android APK
-
-```bash
-cd android-host
+cd ../android-host
 gradle :app:assembleDebug
 ```
 
-APK output:
+More detail: `docs/BUILD_WITH_DOCKER.md`
 
-- `android-host/app/build/outputs/apk/debug/app-debug.apk`
+## Quick Start
 
-## Sideload onto Nvidia Shield Pro
-
-Because the Shield’s USB port may already be occupied by the 8BitDo dongle, network ADB is usually the easiest path.
-
-1. On the Shield, enable Developer Options and ADB/network debugging.
-2. Connect your Linux workstation to the Shield over ADB:
+### 1. Install the Android app
 
 ```bash
 adb connect SHIELD_IP:5555
+adb install -r build-artifacts/android/app-debug.apk
 ```
 
-3. Install the APK:
+Open `USBoss` on the Android device, grant USB permission, and start the host.
+
+### 2. Start the Linux client
 
 ```bash
-adb install -r android-host/app/build/outputs/apk/debug/app-debug.apk
+sudo build-artifacts/linux/usboss-client attach-all --host SHIELD_IP:35355
 ```
 
-4. Launch `USBoss` on the Shield.
-5. Plug in the 8BitDo USB dongle if it is not already connected.
-6. Use the `Grant USB` button once and accept the Android USB permission dialog.
-
-## Run
-
-### Start the Android host
-
-Open the app on the Shield and leave it running. The foreground service will:
-
-- listen on TCP `35355`
-- answer UDP discovery on `35354`
-- show the exact `usboss-client` command to run from Linux
-- stay available even if no supported controller is currently plugged in
-
-### Start the Linux client
-
-You can either auto-discover or point it directly at the Shield.
-
-Auto-discover:
+Useful commands:
 
 ```bash
-sudo linux-client/target/release/usboss-client discover
-sudo linux-client/target/release/usboss-client attach-all
+sudo build-artifacts/linux/usboss-client discover
+sudo build-artifacts/linux/usboss-client list --host SHIELD_IP:35355
+sudo build-artifacts/linux/usboss-client attach --host SHIELD_IP:35355 --device-id 1
+sudo build-artifacts/linux/usboss-client attach-all --host SHIELD_IP:35355 --verbose
 ```
 
-Direct host:
+## Runtime Notes
 
-```bash
-sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355
-```
+- `attach-all` is the recommended mode for normal use
+- `attach` is useful when you want to pin a specific controller manually
+- XInput devices use `/dev/uinput`
+- HID devices use `/dev/uhid`
+- If needed, install the udev rule from `docs/99-usboss-uhid.rules` to avoid running the Linux client as `root`
 
-For one or more controllers, the smoother option is now:
-
-```bash
-sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355
-```
-
-`attach-all` runs a local supervisor that keeps one managed attachment loop per advertised controller slot. That means:
-
-- one Linux command for single-player or multiplayer
-- automatic recovery when the Shield host restarts
-- automatic recovery when a controller is unplugged and later replugged
-- no need to manually launch one Linux process per controller in the common case
-
-When you are debugging hardware behavior, add `--verbose`:
-
-```bash
-sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355 --verbose
-```
-
-If you want manual control over a specific controller, list the interfaces first:
-
-```bash
-sudo linux-client/target/release/usboss-client list --host SHIELD_IP:35355
-sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --device-id 1
-```
-
-Manual per-controller pinning is still available if you prefer it:
-
-```bash
-sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --device-id 1
-sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --device-id 2
-```
-
-`attach` is now a persistent runtime command:
-
-- if the host is offline, it keeps retrying
-- if the host is online but no controller is present yet, it keeps waiting
-- if the controller is unplugged and replugged, it reconnects and reattaches automatically
-- pass `--once` if you want the old single-shot behavior for debugging
-
-You can tune the retry loop if needed:
-
-```bash
-sudo linux-client/target/release/usboss-client attach --host SHIELD_IP:35355 --retry-ms 1500 --rescan-ms 1000
-```
-
-## Everyday runtime behavior
-
-These states are now treated as normal:
-
-- start the Shield host first, then plug the controller in later
-- start the Linux client first, then turn on the Shield host later
-- unplug and replug the controller while the host is already running
-- restart either side and let `attach` settle back into a healthy connection
-
-For your use case, the intended steady state is simply to leave the Android host service running and leave `usboss-client attach-all` running on Linux.
-
-For two local players, the intended steady state is:
-
-- two dongles plugged into the Android host
-- one `usboss-client attach-all` process running on Linux
-- one virtual controller created per forwarded controller slot
-
-## Avoid duplicate input with Moonlight/Sunshine
-
-For your exact setup, the Linux box will now see a local virtual gamepad through `USBoss`.
-
-That means Moonlight may also try to forward the same controller through its normal gamepad path. If you notice double inputs:
-
-- disable Moonlight gamepad forwarding for that Shield session, or
-- disable controller forwarding on the Sunshine side for that client session
-
-The right toggle depends on your current Moonlight/Sunshine config, but the symptom is straightforward: every button press appears twice.
-
-## Test checklist
-
-### Basic device visibility
-
-1. Start `USBoss` on the Shield.
-2. Confirm the app shows your dongle as `XInput 360` or `HID`.
-3. Run:
-
-```bash
-sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355
-```
-
-4. In another Linux shell, verify that a new input device exists:
-
-```bash
-ls -l /dev/uhid /dev/uinput
-grep -H . /sys/class/input/event*/device/name 2>/dev/null | grep USBoss
-```
-
-For XInput mode, the virtual controller is created through `/dev/uinput`.
-For HID mode, the virtual controller is created through `/dev/uhid`.
-
-### Input test
-
-Use one of these tools:
-
-```bash
-sudo evtest
-```
-
-or
-
-```bash
-sudo libinput debug-events
-```
-
-Press buttons on the 8BitDo controller and confirm events show up on Linux.
-
-### Hotplug test
-
-1. Leave `usboss-client attach-all` running.
-2. Unplug the controller or dongle from the Android host.
-3. Confirm the Linux client drops back to a waiting/retrying state instead of exiting.
-4. Plug the controller or dongle back in.
-5. Confirm the client reconnects and the virtual controller becomes active again.
-
-### In-game test with Sunshine
-
-1. Keep `usboss-client attach-all` attached on the Linux machine.
-2. Start Sunshine as usual.
-3. Launch a game locally on Linux or through Sunshine.
-4. Confirm the game sees the virtual controller.
-5. If input is doubled, adjust Moonlight/Sunshine gamepad forwarding as noted above.
+If you are using Moonlight and Sunshine, avoid double input by disabling duplicate gamepad forwarding on one side of the session.
 
 ## Debugging
 
-For real hardware testing, turn on verbose logging in the Android app. The app now keeps a rolling in-app event log and also writes detailed `USBoss` entries to logcat.
+Enable `Verbose` in the Android app and run the Linux client with `--verbose`.
 
-Linux side:
+Linux:
 
 ```bash
-sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355 --verbose
+sudo build-artifacts/linux/usboss-client attach-all --host SHIELD_IP:35355 --verbose
 ```
 
-Android side:
-
-- open `USBoss`
-- tap `Verbose: Off` so it changes to `Verbose: On`
-- watch the `Recent Events` panel in the app
-- or capture full logs with:
+Android:
 
 ```bash
 adb logcat -s USBoss
 ```
 
-This combination should tell you:
+## Limitations
 
-- whether the Shield enumerated the dongle as `HID` or `XInput 360`
-- whether USB permission was requested and granted
-- whether Linux connected and requested a device
-- whether the Android host successfully opened and claimed the USB interface
-- whether the input pump or output-report path failed
+- Generic USB forwarding is out of scope
+- Xbox One / GIP devices are not implemented
+- The Linux XInput backend is input-only today
+- Rumble is not implemented yet
 
-## Permissions for `/dev/uhid` and `/dev/uinput`
+## License
 
-Quickest path:
+`USBoss` is licensed under the MIT License.
 
-```bash
-sudo linux-client/target/release/usboss-client attach-all --host SHIELD_IP:35355
-```
+## Acknowledgments
 
-If you want to run without `sudo`, install the udev rule from [docs/99-usboss-uhid.rules](/Users/nick.valente/.dev/usboss/docs/99-usboss-uhid.rules).
-
-## Known limitations
-
-- Generic USB devices are out of scope.
-- XInput support is currently aimed at Xbox 360 style packet layouts.
-- Xbox One / GIP style devices are not currently implemented.
-- Output reports are best-effort. Basic input is the main focus of this first cut.
-- The Linux virtual XInput backend currently focuses on input. Rumble is not implemented there yet.
-- For multiple identical controllers with no unique serial number, `attach-all` keeps them in separate managed slots, but a full unplug/replug can still swap which physical controller lands in which slot.
-- I could not compile this locally because the current environment did not have Android or Rust toolchains installed.
-
-## Suggested next improvements
-
-- add a small pairing token instead of open LAN access
-- add a persistent systemd install script for the Linux client
-- add optional mDNS in addition to UDP broadcast discovery
-- add rumble / force-feedback support for the virtual XInput device
-- add explicit Xbox One / GIP transport support where Android USB behavior allows it
+`USBoss` was inspired by remote USB and device-forwarding tools such as VirtualHere. It is an independent project and is not affiliated with, endorsed by, or distributed by VirtualHere or its authors.
