@@ -4,22 +4,16 @@ import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.rememberScrollState
@@ -111,6 +105,7 @@ private fun UsbBossScreen(
     onClearEvents: () -> Unit,
 ) {
     var showConnectionInfo by remember { mutableStateOf(false) }
+    var showControllerInfo by remember { mutableStateOf(false) }
     var showLogs by remember { mutableStateOf(false) }
     val background = Brush.verticalGradient(
         listOf(
@@ -143,59 +138,29 @@ private fun UsbBossScreen(
                             onToggleStartOnBoot = onToggleStartOnBoot,
                             onToggleVerbose = onToggleVerbose,
                             onShowConnectionInfo = { showConnectionInfo = true },
+                            onShowControllerInfo = { showControllerInfo = true },
                             onShowLogs = { showLogs = true },
                         )
                     },
                 ) { innerPadding ->
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(
-                            start = 20.dp,
-                            top = innerPadding.calculateTopPadding() + 8.dp,
-                            end = 20.dp,
-                            bottom = innerPadding.calculateBottomPadding() + 28.dp,
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                    ) {
-                        if (state.lastError != null) {
-                            item {
-                                ErrorCard(state.lastError)
-                            }
-                        }
-
-                        item {
-                            SectionHeader(
-                                title = "Controllers",
-                                subtitle = if (state.devices.isEmpty()) {
-                                    null
-                                } else {
-                                    "${state.devices.size} detected"
-                                },
-                            )
-                        }
-
-                        if (state.devices.isEmpty()) {
-                            item {
-                                EmptyStateCard()
-                            }
-                        } else {
-                            items(
-                                items = state.devices,
-                                key = { candidate -> candidate.systemPath },
-                            ) { candidate ->
-                                DeviceCard(
-                                    candidate = candidate,
-                                )
-                            }
-                        }
-
-                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding),
+                    )
                 }
 
                 if (showConnectionInfo) {
                     ConnectionInfoDialog(
                         state = state,
                         onDismiss = { showConnectionInfo = false },
+                    )
+                }
+
+                if (showControllerInfo) {
+                    ControllerInfoDialog(
+                        state = state,
+                        onDismiss = { showControllerInfo = false },
                     )
                 }
 
@@ -221,6 +186,7 @@ private fun FixedHeader(
     onToggleStartOnBoot: () -> Unit,
     onToggleVerbose: () -> Unit,
     onShowConnectionInfo: () -> Unit,
+    onShowControllerInfo: () -> Unit,
     onShowLogs: () -> Unit,
 ) {
     Column(
@@ -240,6 +206,7 @@ private fun FixedHeader(
             onToggleStartOnBoot = onToggleStartOnBoot,
             onToggleVerbose = onToggleVerbose,
             onShowConnectionInfo = onShowConnectionInfo,
+            onShowControllerInfo = onShowControllerInfo,
             onShowLogs = onShowLogs,
         )
     }
@@ -315,7 +282,7 @@ private fun HeroCard(state: HostUiState) {
                 }
 
                 Text(
-                    text = "Linux session: ${state.connectedClient ?: "waiting"}",
+                    text = "Linux session: ${state.connectedClient ?: "none"}",
                     color = UsbBossPalette.textSecondary,
                     style = MaterialTheme.typography.bodyLarge,
                     maxLines = 2,
@@ -336,6 +303,7 @@ private fun ControlDeck(
     onToggleStartOnBoot: () -> Unit,
     onToggleVerbose: () -> Unit,
     onShowConnectionInfo: () -> Unit,
+    onShowControllerInfo: () -> Unit,
     onShowLogs: () -> Unit,
 ) {
     Card(
@@ -351,89 +319,169 @@ private fun ControlDeck(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Button(
-                    onClick = if (state.serviceRunning) onStop else onStart,
+                Column(
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (state.serviceRunning) UsbBossPalette.pink else UsbBossPalette.violet,
-                        contentColor = UsbBossPalette.canvas,
-                    ),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text(if (state.serviceRunning) "Stop Host" else "Start Host")
+                    Button(
+                        onClick = if (state.serviceRunning) onStop else onStart,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (state.serviceRunning) UsbBossPalette.pink else UsbBossPalette.violet,
+                            contentColor = UsbBossPalette.canvas,
+                        ),
+                    ) {
+                        Text(if (state.serviceRunning) "Stop Host" else "Start Host")
+                    }
+                    Button(
+                        onClick = onRefresh,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = UsbBossPalette.surface,
+                            contentColor = UsbBossPalette.textPrimary,
+                        ),
+                    ) {
+                        Text("Refresh")
+                    }
+                    Button(
+                        onClick = onGrant,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = UsbBossPalette.surfaceMuted,
+                            contentColor = UsbBossPalette.textPrimary,
+                        ),
+                    ) {
+                        Text("Grant USB")
+                    }
+                    Button(
+                        onClick = onShowControllerInfo,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = UsbBossPalette.surface,
+                            contentColor = UsbBossPalette.textPrimary,
+                        ),
+                    ) {
+                        Text("Controller Info")
+                    }
                 }
-                Button(
-                    onClick = onGrant,
+                Column(
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = UsbBossPalette.surfaceMuted,
-                        contentColor = UsbBossPalette.textPrimary,
-                    ),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text("Grant USB")
+                    Button(
+                        onClick = onShowConnectionInfo,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = UsbBossPalette.surface,
+                            contentColor = UsbBossPalette.textPrimary,
+                        ),
+                    ) {
+                        Text("Connection Info")
+                    }
+                    Button(
+                        onClick = onShowLogs,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = UsbBossPalette.surface,
+                            contentColor = UsbBossPalette.textPrimary,
+                        ),
+                    ) {
+                        Text("Show Logs")
+                    }
+                    ToggleActionButton(
+                        label = if (state.startOnBoot) "Boot: On" else "Boot: Off",
+                        active = state.startOnBoot,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = onToggleStartOnBoot,
+                    )
+                    ToggleActionButton(
+                        label = if (state.verboseLogging) "Verbose: On" else "Verbose: Off",
+                        active = state.verboseLogging,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = onToggleVerbose,
+                    )
                 }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Button(
-                    onClick = onRefresh,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = UsbBossPalette.surface,
-                        contentColor = UsbBossPalette.textPrimary,
-                    ),
-                ) {
-                    Text("Refresh")
-                }
-                Button(
-                    onClick = onShowLogs,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = UsbBossPalette.surface,
-                        contentColor = UsbBossPalette.textPrimary,
-                    ),
-                ) {
-                    Text("Show Logs")
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Button(
-                    onClick = onShowConnectionInfo,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = UsbBossPalette.surface,
-                        contentColor = UsbBossPalette.textPrimary,
-                    ),
-                ) {
-                    Text("Connection Info")
-                }
-                ToggleActionButton(
-                    label = if (state.startOnBoot) "Boot: On" else "Boot: Off",
-                    active = state.startOnBoot,
-                    modifier = Modifier.weight(1f),
-                    onClick = onToggleStartOnBoot,
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                ToggleActionButton(
-                    label = if (state.verboseLogging) "Verbose: On" else "Verbose: Off",
-                    active = state.verboseLogging,
-                    modifier = Modifier.weight(1f),
-                    onClick = onToggleVerbose,
-                )
             }
         }
     }
+}
+
+@Composable
+private fun ControllerInfoDialog(
+    state: HostUiState,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Controller Info",
+                color = UsbBossPalette.textPrimary,
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (state.devices.isEmpty()) {
+                    Text(
+                        text = "No controllers.",
+                        color = UsbBossPalette.textSecondary,
+                    )
+                } else {
+                    state.devices.forEach { candidate ->
+                        val stateLabel = if (candidate.hasPermission) "Ready" else "Permission needed"
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(22.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = UsbBossPalette.surface.copy(alpha = 0.96f),
+                            ),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(
+                                    text = candidate.displayName,
+                                    color = UsbBossPalette.textPrimary,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    text = "$stateLabel • ${candidate.transportLabel}",
+                                    color = UsbBossPalette.textSecondary,
+                                )
+                                Text(
+                                    text = "iface ${candidate.interfaceNumber}  VID:PID ${candidate.vendorId.toString(16).padStart(4, '0')}:${candidate.productId.toString(16).padStart(4, '0')}",
+                                    color = UsbBossPalette.textSecondary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                SelectionContainer {
+                                    Text(
+                                        text = candidate.systemPath,
+                                        color = UsbBossPalette.textMuted,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = UsbBossPalette.pink)
+            }
+        },
+        containerColor = UsbBossPalette.surfaceRaised,
+        shape = RoundedCornerShape(28.dp),
+    )
 }
 
 @Composable
@@ -500,132 +548,6 @@ private fun StatChip(label: String, accent: Color) {
             color = UsbBossPalette.textPrimary,
             style = MaterialTheme.typography.labelLarge,
         )
-    }
-}
-
-@Composable
-private fun SectionHeader(
-    title: String,
-    subtitle: String?,
-) {
-    Column(
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Text(
-            text = title,
-            color = UsbBossPalette.textPrimary,
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-        )
-        if (!subtitle.isNullOrBlank()) {
-            Text(
-                text = subtitle,
-                color = UsbBossPalette.textMuted,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-        }
-    }
-}
-
-@Composable
-private fun ErrorCard(message: String) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF3A1625)),
-        shape = RoundedCornerShape(22.dp),
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text(
-                text = "Attention Needed",
-                color = UsbBossPalette.danger,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = message,
-                color = Color(0xFFFFD9E1),
-            )
-        }
-    }
-}
-
-@Composable
-private fun EmptyStateCard() {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = UsbBossPalette.surface.copy(alpha = 0.94f)),
-    ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text(
-                text = "No controllers.",
-                color = UsbBossPalette.textPrimary,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-    }
-}
-
-@Composable
-private fun DeviceCard(
-    candidate: UsbCandidate,
-) {
-    val stateEmoji = if (candidate.hasPermission) "🎮" else "🔒"
-    val stateLabel = if (candidate.hasPermission) "Ready" else "Permission needed"
-    val accent = if (candidate.hasPermission) UsbBossPalette.pink else UsbBossPalette.warning
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = UsbBossPalette.surface.copy(alpha = 0.96f)),
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top,
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        text = "$stateEmoji ${candidate.displayName}",
-                        color = UsbBossPalette.textPrimary,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = stateLabel,
-                        color = accent,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                StatChip(
-                    label = candidate.transportLabel,
-                    accent = accent,
-                )
-            }
-
-            Text(
-                text = "iface ${candidate.interfaceNumber}  VID:PID ${candidate.vendorId.toString(16).padStart(4, '0')}:${candidate.productId.toString(16).padStart(4, '0')}",
-                color = UsbBossPalette.textSecondary,
-            )
-            Text(
-                text = candidate.systemPath,
-                color = UsbBossPalette.textMuted,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
     }
 }
 

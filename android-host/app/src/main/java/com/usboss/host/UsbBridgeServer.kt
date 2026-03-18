@@ -478,10 +478,11 @@ class UsbBridgeServer(
 
     private fun updateSessionPresentation() {
         val presentation = synchronized(sessionLock) {
-            val monitoring = sessions.values.filter { it.role == SessionRole.Monitoring }
-            val forwarding = sessions.values.filter { it.role == SessionRole.Forwarding }
+            val activeSessions = sessions.values.filterNot(::isSessionSocketStale)
+            val monitoring = activeSessions.filter { it.role == SessionRole.Monitoring }
+            val forwarding = activeSessions.filter { it.role == SessionRole.Forwarding }
             SessionPresentation(
-                summary = summarizeSessions(monitoring, forwarding),
+                summary = summarizeSessions(forwarding),
                 status = summarizeStatus(monitoring, forwarding),
                 monitoringCount = monitoring.size,
                 forwardingCount = forwarding.size,
@@ -496,15 +497,9 @@ class UsbBridgeServer(
         presentation.status?.let(onStatus)
     }
 
-    private fun summarizeSessions(
-        monitoring: List<ClientSession>,
-        forwarding: List<ClientSession>,
-    ): String? {
+    private fun summarizeSessions(forwarding: List<ClientSession>): String? {
         return when {
-            forwarding.isNotEmpty() && monitoring.isNotEmpty() ->
-                "${describeSessionGroup("Forwarding to", forwarding)}; monitoring active (${monitoring.size})"
             forwarding.isNotEmpty() -> describeSessionGroup("Forwarding to", forwarding)
-            monitoring.isNotEmpty() -> describeSessionGroup("Monitoring from", monitoring)
             else -> null
         }
     }
