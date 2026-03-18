@@ -1,7 +1,10 @@
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::mem::{size_of, zeroed};
 use std::os::fd::AsRawFd;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -16,6 +19,8 @@ const ABS_CNT: usize = 64;
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_ABS: u16 = 0x03;
+const EV_FF: u16 = 0x15;
+const EV_UINPUT: u16 = 0x0101;
 
 const SYN_REPORT: u16 = 0;
 
@@ -40,6 +45,15 @@ const ABS_RZ: usize = 5;
 const ABS_HAT0X: usize = 16;
 const ABS_HAT0Y: usize = 17;
 
+const FF_RUMBLE: u16 = 0x50;
+const FF_GAIN: u16 = 0x60;
+const FF_AUTOCENTER: u16 = 0x61;
+
+const UI_FF_UPLOAD: u16 = 1;
+const UI_FF_ERASE: u16 = 2;
+const XINPUT_FF_EFFECTS_MAX: u32 = 16;
+const XINPUT_RUMBLE_PACKET_LEN: usize = 8;
+
 const UINPUT_IOCTL_BASE: u32 = b'U' as u32;
 const IOC_NRBITS: u32 = 8;
 const IOC_TYPEBITS: u32 = 8;
@@ -50,6 +64,7 @@ const IOC_SIZESHIFT: u32 = IOC_TYPESHIFT + IOC_TYPEBITS;
 const IOC_DIRSHIFT: u32 = IOC_SIZESHIFT + IOC_SIZEBITS;
 const IOC_NONE: u32 = 0;
 const IOC_WRITE: u32 = 1;
+const IOC_READ: u32 = 2;
 
 const fn ioc(dir: u32, ty: u32, nr: u32, size: u32) -> libc::c_ulong {
     ((dir << IOC_DIRSHIFT)
@@ -66,11 +81,24 @@ const fn iow_int(ty: u32, nr: u32) -> libc::c_ulong {
     ioc(IOC_WRITE, ty, nr, size_of::<c_int>() as u32)
 }
 
+const fn iowr<T>(ty: u32, nr: u32) -> libc::c_ulong {
+    ioc(IOC_READ | IOC_WRITE, ty, nr, size_of::<T>() as u32)
+}
+
+const fn iow<T>(ty: u32, nr: u32) -> libc::c_ulong {
+    ioc(IOC_WRITE, ty, nr, size_of::<T>() as u32)
+}
+
 const UI_DEV_CREATE: libc::c_ulong = io(UINPUT_IOCTL_BASE, 1);
 const UI_DEV_DESTROY: libc::c_ulong = io(UINPUT_IOCTL_BASE, 2);
 const UI_SET_EVBIT: libc::c_ulong = iow_int(UINPUT_IOCTL_BASE, 100);
 const UI_SET_KEYBIT: libc::c_ulong = iow_int(UINPUT_IOCTL_BASE, 101);
 const UI_SET_ABSBIT: libc::c_ulong = iow_int(UINPUT_IOCTL_BASE, 103);
+const UI_SET_FFBIT: libc::c_ulong = iow_int(UINPUT_IOCTL_BASE, 107);
+const UI_BEGIN_FF_UPLOAD: libc::c_ulong = iowr::<UinputFfUpload>(UINPUT_IOCTL_BASE, 200);
+const UI_END_FF_UPLOAD: libc::c_ulong = iow::<UinputFfUpload>(UINPUT_IOCTL_BASE, 201);
+const UI_BEGIN_FF_ERASE: libc::c_ulong = iowr::<UinputFfErase>(UINPUT_IOCTL_BASE, 202);
+const UI_END_FF_ERASE: libc::c_ulong = iow::<UinputFfErase>(UINPUT_IOCTL_BASE, 203);
 
 #[repr(C)]
 struct InputId {
@@ -99,6 +127,134 @@ struct InputEvent {
     value: i32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FfReplay {
+    length: u16,
+    delay: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FfTrigger {
+    button: u16,
+    interval: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FfEnvelope {
+    attack_length: u16,
+    attack_level: u16,
+    fade_length: u16,
+    fade_level: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FfConstantEffect {
+    level: i16,
+    envelope: FfEnvelope,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FfRampEffect {
+    start_level: i16,
+    end_level: i16,
+    envelope: FfEnvelope,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FfConditionEffect {
+    right_saturation: u16,
+    left_saturation: u16,
+    right_coeff: i16,
+    left_coeff: i16,
+    deadband: u16,
+    center: i16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FfPeriodicEffect {
+    waveform: u16,
+    period: u16,
+    magnitude: i16,
+    offset: i16,
+    phase: u16,
+    envelope: FfEnvelope,
+    custom_len: u32,
+    custom_data: *mut i16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FfRumbleEffect {
+    strong_magnitude: u16,
+    weak_magnitude: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+union FfEffectData {
+    constant: FfConstantEffect,
+    ramp: FfRampEffect,
+    periodic: FfPeriodicEffect,
+    condition: [FfConditionEffect; 2],
+    rumble: FfRumbleEffect,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FfEffect {
+    type_: u16,
+    id: i16,
+    direction: u16,
+    trigger: FfTrigger,
+    replay: FfReplay,
+    u: FfEffectData,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UinputFfUpload {
+    request_id: u32,
+    retval: i32,
+    effect: FfEffect,
+    old: FfEffect,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UinputFfErase {
+    request_id: u32,
+    retval: i32,
+    effect_id: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RumbleCommand {
+    pub strong_magnitude: u16,
+    pub weak_magnitude: u16,
+}
+
+impl RumbleCommand {
+    pub fn to_xinput_packet(self) -> [u8; XINPUT_RUMBLE_PACKET_LEN] {
+        [
+            0x00,
+            0x08,
+            0x00,
+            (self.strong_magnitude / 256) as u8,
+            (self.weak_magnitude / 256) as u8,
+            0x00,
+            0x00,
+            0x00,
+        ]
+    }
+}
+
 pub struct XInput360Device {
     file: File,
     input_reports_seen: usize,
@@ -119,6 +275,8 @@ impl XInput360Device {
 
         ioctl_int(fd, UI_SET_EVBIT, EV_KEY as i32)?;
         ioctl_int(fd, UI_SET_EVBIT, EV_ABS as i32)?;
+        ioctl_int(fd, UI_SET_EVBIT, EV_FF as i32)?;
+        ioctl_int(fd, UI_SET_FFBIT, FF_RUMBLE as i32)?;
 
         for key in [
             BTN_A,
@@ -148,6 +306,7 @@ impl XInput360Device {
             product: spec.product_id,
             version: spec.version_bcd,
         };
+        dev.ff_effects_max = XINPUT_FF_EFFECTS_MAX;
 
         dev.absmin[ABS_X] = i16::MIN as i32;
         dev.absmax[ABS_X] = i16::MAX as i32;
@@ -175,6 +334,18 @@ impl XInput360Device {
             input_reports_seen: 0,
             unknown_reports_seen: 0,
         })
+    }
+
+    pub fn spawn_rumble_loop<F>(
+        &self,
+        stop_flag: Arc<AtomicBool>,
+        on_rumble: F,
+    ) -> io::Result<thread::JoinHandle<io::Result<()>>>
+    where
+        F: FnMut(RumbleCommand) -> io::Result<()> + Send + 'static,
+    {
+        let file = self.file.try_clone()?;
+        Ok(thread::spawn(move || run_rumble_loop(file, stop_flag, on_rumble)))
     }
 
     pub fn send_input_report(&mut self, data: &[u8]) -> io::Result<()> {
@@ -257,6 +428,172 @@ impl Drop for XInput360Device {
     fn drop(&mut self) {
         let _ = self.destroy();
     }
+}
+
+fn run_rumble_loop<F>(
+    mut file: File,
+    stop_flag: Arc<AtomicBool>,
+    mut on_rumble: F,
+) -> io::Result<()>
+where
+    F: FnMut(RumbleCommand) -> io::Result<()>,
+{
+    let fd = file.as_raw_fd();
+    let mut effects = HashMap::<i16, FfRumbleEffect>::new();
+    let mut active_effects = HashSet::<i16>::new();
+    let mut last_command = RumbleCommand::default();
+
+    loop {
+        if stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let mut poll_fd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let poll_result = unsafe { libc::poll(&mut poll_fd, 1, 250) };
+        if poll_result < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if poll_result == 0 {
+            continue;
+        }
+        if (poll_fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
+            break;
+        }
+        if (poll_fd.revents & libc::POLLIN) == 0 {
+            continue;
+        }
+
+        let event = read_struct::<InputEvent>(&mut file)?;
+        match event.type_ {
+            EV_UINPUT => match event.code {
+                UI_FF_UPLOAD => {
+                    let changed_effect = handle_ff_upload(fd, event.value as u32, &mut effects)?;
+                    if changed_effect.is_some_and(|effect_id| active_effects.contains(&effect_id)) {
+                        let command = combined_rumble_command(&effects, &active_effects);
+                        if command != last_command {
+                            debug(&format!(
+                                "Updated active rumble effect -> strong={} weak={}",
+                                command.strong_magnitude, command.weak_magnitude
+                            ));
+                            on_rumble(command)?;
+                            last_command = command;
+                        }
+                    }
+                }
+                UI_FF_ERASE => {
+                    let erased_effect = handle_ff_erase(fd, event.value as u32, &mut effects)?;
+                    if let Some(effect_id) = erased_effect {
+                        active_effects.remove(&effect_id);
+                        let command = combined_rumble_command(&effects, &active_effects);
+                        if command != last_command {
+                            debug(&format!(
+                                "Erased active rumble effect -> strong={} weak={}",
+                                command.strong_magnitude, command.weak_magnitude
+                            ));
+                            on_rumble(command)?;
+                            last_command = command;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            EV_FF => {
+                if event.code == FF_GAIN || event.code == FF_AUTOCENTER {
+                    continue;
+                }
+
+                let effect_id = event.code as i16;
+                if event.value == 0 {
+                    active_effects.remove(&effect_id);
+                } else {
+                    active_effects.insert(effect_id);
+                }
+
+                let command = combined_rumble_command(&effects, &active_effects);
+                if command != last_command {
+                    debug(&format!(
+                        "Forwarding rumble effect {} value={} -> strong={} weak={}",
+                        effect_id,
+                        event.value,
+                        command.strong_magnitude,
+                        command.weak_magnitude
+                    ));
+                    on_rumble(command)?;
+                    last_command = command;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if last_command != RumbleCommand::default() {
+        let _ = on_rumble(RumbleCommand::default());
+    }
+    Ok(())
+}
+
+fn handle_ff_upload(
+    fd: i32,
+    request_id: u32,
+    effects: &mut HashMap<i16, FfRumbleEffect>,
+) -> io::Result<Option<i16>> {
+    let mut upload: UinputFfUpload = unsafe { zeroed() };
+    upload.request_id = request_id;
+    ioctl_struct(fd, UI_BEGIN_FF_UPLOAD, &mut upload)?;
+
+    let effect_id = upload.effect.id;
+    if upload.effect.type_ != FF_RUMBLE || effect_id < 0 {
+        upload.retval = -(libc::EINVAL as i32);
+    } else {
+        let rumble = unsafe { upload.effect.u.rumble };
+        debug(&format!(
+            "Registered rumble effect {} -> strong={} weak={}",
+            effect_id, rumble.strong_magnitude, rumble.weak_magnitude
+        ));
+        effects.insert(effect_id, rumble);
+        upload.retval = 0;
+    }
+
+    ioctl_struct(fd, UI_END_FF_UPLOAD, &mut upload)?;
+    Ok((upload.retval == 0).then_some(effect_id))
+}
+
+fn handle_ff_erase(
+    fd: i32,
+    request_id: u32,
+    effects: &mut HashMap<i16, FfRumbleEffect>,
+) -> io::Result<Option<i16>> {
+    let mut erase: UinputFfErase = unsafe { zeroed() };
+    erase.request_id = request_id;
+    ioctl_struct(fd, UI_BEGIN_FF_ERASE, &mut erase)?;
+    let effect_id = erase.effect_id as i16;
+    effects.remove(&effect_id);
+    erase.retval = 0;
+    ioctl_struct(fd, UI_END_FF_ERASE, &mut erase)?;
+    debug(&format!("Erased rumble effect {}", effect_id));
+    Ok(Some(effect_id))
+}
+
+fn combined_rumble_command(
+    effects: &HashMap<i16, FfRumbleEffect>,
+    active_effects: &HashSet<i16>,
+) -> RumbleCommand {
+    let mut command = RumbleCommand::default();
+    for effect_id in active_effects {
+        if let Some(effect) = effects.get(effect_id) {
+            command.strong_magnitude = command.strong_magnitude.max(effect.strong_magnitude);
+            command.weak_magnitude = command.weak_magnitude.max(effect.weak_magnitude);
+        }
+    }
+    command
 }
 
 struct XInput360State {
@@ -418,6 +755,14 @@ fn ioctl_none(fd: i32, request: libc::c_ulong) -> io::Result<()> {
     Ok(())
 }
 
+fn ioctl_struct<T>(fd: i32, request: libc::c_ulong, value: &mut T) -> io::Result<()> {
+    let result = unsafe { libc::ioctl(fd, request, value) };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn write_padded_string(buffer: &mut [u8], value: &str) {
     buffer.fill(0);
     let bytes = value.as_bytes();
@@ -427,4 +772,15 @@ fn write_padded_string(buffer: &mut [u8], value: &str) {
 
 fn as_bytes<T>(value: &T) -> &[u8] {
     unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
+}
+
+fn as_bytes_mut<T>(value: &mut T) -> &mut [u8] {
+    unsafe { std::slice::from_raw_parts_mut((value as *mut T).cast::<u8>(), size_of::<T>()) }
+}
+
+fn read_struct<T>(file: &mut File) -> io::Result<T> {
+    let mut value: T = unsafe { zeroed() };
+    use std::io::Read;
+    file.read_exact(as_bytes_mut(&mut value))?;
+    Ok(value)
 }

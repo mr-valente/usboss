@@ -20,9 +20,9 @@ use protocol::{
     DEFAULT_DISCOVERY_PORT, DEFAULT_TCP_PORT, DISCOVERY_REQUEST, DISCOVERY_RESPONSE_PREFIX,
 };
 use uhid::UhidDevice;
-use uinput::XInput360Device;
+use uinput::{RumbleCommand, XInput360Device};
 
-const BUILD_FINGERPRINT: &str = "v0.1.1-cleanup-pass-2026-03-18";
+const BUILD_FINGERPRINT: &str = "v0.1.1-rumble-pass-2026-03-18";
 
 fn main() {
     if let Err(error) = run() {
@@ -523,32 +523,61 @@ fn attach_xinput_loop(
     debug(&format!("Creating virtual XInput device for {}", spec.name));
     let mut device = XInput360Device::create(&spec)
         .map_err(|error| AttachFailure::Fatal(format!("failed to create virtual XInput device: {error}")))?;
+    let writer = Arc::new(Mutex::new(
+        stream
+            .try_clone()
+            .map_err(|error| AttachFailure::Retryable(format!("failed to clone TCP stream: {error}")))?,
+    ));
+    let rumble_stop = Arc::new(AtomicBool::new(false));
+    let rumble_thread = if spec.has_interrupt_out && spec.output_packet_size > 0 {
+        let writer_for_thread = Arc::clone(&writer);
+        let stop_for_thread = Arc::clone(&rumble_stop);
+        Some(
+            device
+                .spawn_rumble_loop(stop_for_thread, move |command| {
+                    send_xinput_rumble(&writer_for_thread, command)
+                })
+                .map_err(|error| {
+                    AttachFailure::Fatal(format!("failed to start XInput rumble loop: {error}"))
+                })?,
+        )
+    } else {
+        None
+    };
     stream
         .set_nodelay(true)
         .map_err(|error| AttachFailure::Retryable(format!("failed to configure TCP stream: {error}")))?;
 
-    loop {
+    let outcome = loop {
         if stop_requested_control(stop_control) {
-            return Ok(());
+            break Ok(());
         }
         match read_message(&mut stream) {
             Ok(Message::InputReport { data }) => {
                 if let Err(error) = device.send_input_report(&data) {
-                    return Err(AttachFailure::Fatal(format!(
+                    break Err(AttachFailure::Fatal(format!(
                         "failed to inject XInput state into uinput: {error}"
                     )));
                 }
             }
             Ok(Message::Ping) => {
-                if let Err(error) = write_message(&mut stream, &Message::Pong) {
-                    return Err(AttachFailure::Retryable(format!(
+                let mut writer = match lock_writer(&writer) {
+                    Ok(writer) => writer,
+                    Err(error) => {
+                        break Err(AttachFailure::Retryable(format!(
+                            "socket writer became unavailable: {error}"
+                        )));
+                    }
+                };
+                if let Err(error) = write_message(&mut *writer, &Message::Pong) {
+                    break Err(AttachFailure::Retryable(format!(
                         "failed to respond to host ping: {error}"
                     )));
                 }
             }
             Ok(Message::Pong) => {}
             Ok(Message::Error { message }) => {
-                return Err(AttachFailure::Retryable(message));
+                break Err(AttachFailure::Retryable(message));
             }
             Ok(Message::GetReportResponse { .. } | Message::SetReportResponse { .. }) => {}
             Ok(other) => {
@@ -556,12 +585,56 @@ fn attach_xinput_loop(
             }
             Err(error) => {
                 if stop_requested_control(stop_control) {
-                    return Ok(());
+                    break Ok(());
                 }
-                return Err(AttachFailure::Retryable(format!("session ended: {error}")));
+                break Err(AttachFailure::Retryable(format!("session ended: {error}")));
+            }
+        }
+    };
+
+    rumble_stop.store(true, Ordering::Relaxed);
+    let _ = device.destroy();
+    if let Some(handle) = rumble_thread {
+        match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                eprintln!("USBoss: XInput rumble loop ended: {error}");
+            }
+            Err(_) => {
+                eprintln!("USBoss: XInput rumble loop panicked");
             }
         }
     }
+    outcome
+}
+
+fn send_xinput_rumble(
+    writer: &Arc<Mutex<TcpStream>>,
+    command: RumbleCommand,
+) -> io::Result<()> {
+    let packet = command.to_xinput_packet();
+    debug(&format!(
+        "Forwarding XInput rumble strong={} weak={} packet={:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+        command.strong_magnitude,
+        command.weak_magnitude,
+        packet[0],
+        packet[1],
+        packet[2],
+        packet[3],
+        packet[4],
+        packet[5],
+        packet[6],
+        packet[7]
+    ));
+    let mut stream = lock_writer(writer)?;
+    write_message(
+        &mut *stream,
+        &Message::OutputReport {
+            report_type: 0,
+            report_id: 0,
+            data: packet.to_vec(),
+        },
+    )
 }
 
 fn connect_target(target: Target) -> Result<TcpStream, Box<dyn Error>> {
