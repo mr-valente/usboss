@@ -333,9 +333,8 @@ class UsbBridgeServer(
             )
         } finally {
             HostRuntime.debug("Cleaning up session $sessionId")
-            inputPump?.cancelAndJoin()
             closeActiveDevice("session cleanup")
-            releaseDevice(sessionId, updatePresentation = false)
+            inputPump?.cancel()
         }
     }
 

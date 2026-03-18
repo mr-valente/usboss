@@ -327,67 +327,47 @@ private fun ControlDeck(
                         onClick = if (state.serviceRunning) onStop else onStart,
                         modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (state.serviceRunning) UsbBossPalette.pink else UsbBossPalette.violet,
-                            contentColor = UsbBossPalette.canvas,
+                            containerColor = if (state.serviceRunning) Color(0xFFE48CC6) else UsbBossPalette.violet,
+                            contentColor = Color(0xFF120A1C),
                         ),
                     ) {
                         Text(if (state.serviceRunning) "Stop Host" else "Start Host")
                     }
-                    Button(
+                    ActionButton(
+                        label = "Refresh",
                         onClick = onRefresh,
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = UsbBossPalette.surface,
-                            contentColor = UsbBossPalette.textPrimary,
-                        ),
-                    ) {
-                        Text("Refresh")
-                    }
-                    Button(
+                        containerColor = UsbBossPalette.surfaceRaised,
+                    )
+                    ActionButton(
+                        label = "Grant USB",
                         onClick = onGrant,
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = UsbBossPalette.surfaceMuted,
-                            contentColor = UsbBossPalette.textPrimary,
-                        ),
-                    ) {
-                        Text("Grant USB")
-                    }
-                    Button(
+                        containerColor = Color(0xFF342046),
+                    )
+                    ActionButton(
+                        label = "Controller Info",
                         onClick = onShowControllerInfo,
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = UsbBossPalette.surface,
-                            contentColor = UsbBossPalette.textPrimary,
-                        ),
-                    ) {
-                        Text("Controller Info")
-                    }
+                        containerColor = UsbBossPalette.surfaceRaised,
+                    )
                 }
                 Column(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Button(
+                    ActionButton(
+                        label = "Connection Info",
                         onClick = onShowConnectionInfo,
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = UsbBossPalette.surface,
-                            contentColor = UsbBossPalette.textPrimary,
-                        ),
-                    ) {
-                        Text("Connection Info")
-                    }
-                    Button(
+                        containerColor = UsbBossPalette.surfaceRaised,
+                    )
+                    ActionButton(
+                        label = "Show Logs",
                         onClick = onShowLogs,
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = UsbBossPalette.surface,
-                            contentColor = UsbBossPalette.textPrimary,
-                        ),
-                    ) {
-                        Text("Show Logs")
-                    }
+                        containerColor = UsbBossPalette.surfaceRaised,
+                    )
                     ToggleActionButton(
                         label = if (state.startOnBoot) "Boot: On" else "Boot: Off",
                         active = state.startOnBoot,
@@ -485,6 +465,26 @@ private fun ControllerInfoDialog(
 }
 
 @Composable
+private fun ActionButton(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    containerColor: Color = UsbBossPalette.surfaceRaised,
+    contentColor: Color = UsbBossPalette.textPrimary,
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = containerColor,
+            contentColor = contentColor,
+        ),
+    ) {
+        Text(label)
+    }
+}
+
+@Composable
 private fun ToggleActionButton(
     label: String,
     active: Boolean,
@@ -495,8 +495,8 @@ private fun ToggleActionButton(
         onClick = onClick,
         modifier = modifier,
         colors = ButtonDefaults.buttonColors(
-            containerColor = if (active) UsbBossPalette.orchid else UsbBossPalette.surface,
-            contentColor = if (active) UsbBossPalette.canvas else UsbBossPalette.textSecondary,
+            containerColor = if (active) UsbBossPalette.orchid else UsbBossPalette.surfaceRaised,
+            contentColor = if (active) Color(0xFF120A1C) else UsbBossPalette.textSecondary,
         ),
     ) {
         Text(label)

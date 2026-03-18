@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.IBinder
@@ -110,21 +111,12 @@ class UsbBossService : Service() {
             when (intent.action) {
                 HostRuntime.ACTION_USB_PERMISSION -> {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                    HostRuntime.refreshDevices(context)
-                    if (granted) {
-                        HostRuntime.requestPermissions(context)
-                        HostRuntime.note(
-                            "USB permission granted; requesting any remaining controllers",
-                            addToRecent = true,
-                        )
-                    } else {
-                        HostRuntime.note("USB permission denied", addToRecent = true)
-                    }
+                    val deviceName = intent.usbDevice()?.deviceName
+                    HostRuntime.onUsbPermissionResult(context, deviceName, granted)
                 }
 
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
                     HostRuntime.refreshDevices(context)
-                    HostRuntime.requestPermissions(context)
                     HostRuntime.note("USB device attached", addToRecent = true)
                 }
 
@@ -133,6 +125,15 @@ class UsbBossService : Service() {
                     HostRuntime.note("USB device detached", addToRecent = true)
                 }
             }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun Intent.usbDevice(): UsbDevice? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+        } else {
+            getParcelableExtra(UsbManager.EXTRA_DEVICE)
         }
     }
 

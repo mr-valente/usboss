@@ -48,6 +48,9 @@ object HostRuntime {
     @Volatile
     private var lastAdvertisedPaths: Set<String> = emptySet()
 
+    @Volatile
+    private var lastMissingPermissionPaths: Set<String> = emptySet()
+
     fun initialize(context: Context) {
         ensureInitialized(context)
     }
@@ -106,6 +109,7 @@ object HostRuntime {
         server?.stop()
         server = null
         lastAdvertisedPaths = emptySet()
+        lastMissingPermissionPaths = emptySet()
         mutableState.update {
             it.copy(
                 serviceRunning = false,
@@ -121,12 +125,20 @@ object HostRuntime {
         runCatching {
             val devices = UsbDeviceCatalog.enumerate(context)
             val openableDevices = devices.filter(UsbCandidate::hasPermission)
+            val missingPermissionPaths = devices
+                .filterNot(UsbCandidate::hasPermission)
+                .map(UsbCandidate::systemPath)
+                .toSet()
+            val missingPermissionsChanged = missingPermissionPaths != lastMissingPermissionPaths
+            lastMissingPermissionPaths = missingPermissionPaths
             candidatesById = openableDevices.associateBy { it.id }
             val availablePaths = openableDevices.map(UsbCandidate::systemPath).toSet()
             if (availablePaths != lastAdvertisedPaths) {
                 lastAdvertisedPaths = availablePaths
                 server?.onAvailableDevicesChanged(availablePaths)
             }
+            val shouldAutoRequestPermissions =
+                state.value.serviceRunning && missingPermissionPaths.isNotEmpty() && missingPermissionsChanged
             val serverIp = if (refreshNetwork || state.value.serverIp.isBlank()) {
                 findLocalIpv4Address().orEmpty()
             } else {
@@ -136,9 +148,17 @@ object HostRuntime {
                 current.copy(
                     devices = devices,
                     serverIp = serverIp,
-                    status = if (current.serviceRunning) listeningStatus(devices) else current.status,
+                    status = when {
+                        !current.serviceRunning -> current.status
+                        current.connectedClient != null -> current.status
+                        current.status.startsWith("Linux monitor connected") -> current.status
+                        else -> listeningStatus(devices)
+                    },
                     lastError = null,
                 )
+            }
+            if (shouldAutoRequestPermissions) {
+                requestPermissions(context)
             }
             debug(
                 "Enumerated ${devices.size} supported controller interface(s): " +
@@ -161,6 +181,40 @@ object HostRuntime {
             debug("Requested USB permissions for visible controller devices")
         }.onFailure { error ->
             updateError("USB permission request failed: ${error.message}")
+        }
+    }
+
+    fun onUsbPermissionResult(context: Context, deviceName: String?, granted: Boolean) {
+        ensureInitialized(context)
+        val appContext = context.applicationContext
+        if (!deviceName.isNullOrBlank()) {
+            mutableState.update { current ->
+                current.copy(
+                    devices = current.devices.map { candidate ->
+                        if (candidate.deviceName == deviceName) {
+                            candidate.copy(hasPermission = granted)
+                        } else {
+                            candidate
+                        }
+                    },
+                )
+            }
+        }
+        note(
+            if (granted) {
+                "USB permission granted"
+            } else {
+                "USB permission denied"
+            },
+            addToRecent = true,
+        )
+        if (granted) {
+            scope.launch {
+                delay(200)
+                refreshDevices(appContext)
+            }
+        } else {
+            refreshDevices(appContext)
         }
     }
 
