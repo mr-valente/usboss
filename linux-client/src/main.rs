@@ -9,6 +9,7 @@ use std::error::Error;
 use std::fmt;
 use std::io;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -21,7 +22,7 @@ use protocol::{
 use uhid::UhidDevice;
 use uinput::XInput360Device;
 
-const BUILD_FINGERPRINT: &str = "v0.1.1-stale-session-recovery-2026-03-17";
+const BUILD_FINGERPRINT: &str = "v0.1.1-worker-stop-recovery-2026-03-17";
 
 fn main() {
     if let Err(error) = run() {
@@ -84,6 +85,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 preferred_matcher: None,
                 preferred_slot: 0,
                 client_name: "usboss-client/attach",
+                stop_flag: None,
             })?;
         }
         Command::AttachAll {
@@ -100,6 +102,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 preferred_matcher: None,
                 preferred_slot: 0,
                 client_name: "usboss-client/attach-all-worker",
+                stop_flag: None,
             })?;
         }
     }
@@ -161,13 +164,18 @@ fn run_attach(config: AttachConfig) -> Result<(), Box<dyn Error>> {
     let mut preferred_matcher = config.preferred_matcher.clone();
 
     loop {
+        if stop_requested(&config) {
+            return Ok(());
+        }
         let target = match resolve_target(config.host.clone()) {
             Ok(target) => target,
             Err(error) => {
                 if config.once {
                     return Err(error);
                 }
-                announce_retry(&error.to_string(), config.retry_delay);
+                if announce_retry_with_stop(&error.to_string(), config.retry_delay, &config) {
+                    return Ok(());
+                }
                 continue;
             }
         };
@@ -177,7 +185,9 @@ fn run_attach(config: AttachConfig) -> Result<(), Box<dyn Error>> {
             Ok(()) => return Ok(()),
             Err(AttachFailure::Retryable(message)) if config.once => return Err(message.into()),
             Err(AttachFailure::Retryable(message)) => {
-                announce_retry(&message, config.retry_delay);
+                if announce_retry_with_stop(&message, config.retry_delay, &config) {
+                    return Ok(());
+                }
             }
             Err(AttachFailure::Fatal(message)) => return Err(message.into()),
         }
@@ -277,6 +287,9 @@ fn attach_session(
     config: &AttachConfig,
     preferred_matcher: &mut Option<DeviceMatcher>,
 ) -> Result<(), AttachFailure> {
+    if stop_requested(config) {
+        return Ok(());
+    }
     let mut stream = connect_target(target.clone()).map_err(|error| {
         AttachFailure::Retryable(format!("unable to connect to {}:{}: {error}", target.host, target.port))
     })?;
@@ -287,6 +300,9 @@ fn attach_session(
     let mut last_waiting_message = String::new();
 
     loop {
+        if stop_requested(config) {
+            return Ok(());
+        }
         let devices =
             list_devices(&mut stream).map_err(|error| classify_control_error("device listing failed", &*error))?;
         let snapshot = device_snapshot(&devices);
@@ -323,7 +339,9 @@ fn attach_session(
                     eprintln!("USBoss: {message}");
                     last_waiting_message = message;
                 }
-                thread::sleep(config.rescan_delay);
+                if sleep_interruptibly(config.rescan_delay, Some(config)) {
+                    return Ok(());
+                }
                 continue;
             }
         };
@@ -345,7 +363,7 @@ fn attach_session(
                         spec.has_interrupt_out
                     ));
                     *preferred_matcher = Some(matcher);
-                    return attach_loop(stream, spec);
+                    return attach_loop(stream, spec, config.stop_flag.as_ref());
                 }
                 Err(error) => {
                     let message = format!("failed to open {selected}: {error}");
@@ -376,18 +394,28 @@ fn attach_session(
         if let Some(message) = &deferred_error {
             eprintln!("USBoss: {message}");
         }
-        thread::sleep(config.rescan_delay);
+        if sleep_interruptibly(config.rescan_delay, Some(config)) {
+            return Ok(());
+        }
     }
 }
 
-fn attach_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachFailure> {
+fn attach_loop(
+    stream: TcpStream,
+    spec: OpenDeviceAck,
+    stop_flag: Option<&Arc<AtomicBool>>,
+) -> Result<(), AttachFailure> {
     match spec.transport {
-        DeviceTransport::Hid => attach_hid_loop(stream, spec),
-        DeviceTransport::XInput360 => attach_xinput_loop(stream, spec),
+        DeviceTransport::Hid => attach_hid_loop(stream, spec, stop_flag),
+        DeviceTransport::XInput360 => attach_xinput_loop(stream, spec, stop_flag),
     }
 }
 
-fn attach_hid_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachFailure> {
+fn attach_hid_loop(
+    stream: TcpStream,
+    spec: OpenDeviceAck,
+    stop_flag: Option<&Arc<AtomicBool>>,
+) -> Result<(), AttachFailure> {
     debug(&format!("Creating UHID device for {}", spec.name));
     let device = Arc::new(
         UhidDevice::create(&spec)
@@ -414,8 +442,14 @@ fn attach_hid_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachF
     reader_stream
         .set_nodelay(true)
         .map_err(|error| AttachFailure::Retryable(format!("failed to configure TCP stream: {error}")))?;
+    reader_stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .map_err(|error| AttachFailure::Retryable(format!("failed to configure TCP read timeout: {error}")))?;
 
     let outcome = loop {
+        if stop_requested_flag(stop_flag) {
+            break Ok(());
+        }
         match read_message(&mut reader_stream) {
             Ok(Message::InputReport { data }) => {
                 if let Err(error) = device.send_input(&data) {
@@ -467,6 +501,9 @@ fn attach_hid_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachF
                 eprintln!("USBoss: ignoring unexpected message during attach: {other:?}");
             }
             Err(error) => {
+                if is_retry_timeout(&error) && stop_requested_flag(stop_flag) {
+                    break Ok(());
+                }
                 break AttachFailure::Retryable(format!("session ended: {error}"));
             }
         }
@@ -474,18 +511,28 @@ fn attach_hid_loop(stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachF
 
     let _ = device.destroy();
     let _ = uhid_thread.join();
-    Err(outcome)
+    outcome
 }
 
-fn attach_xinput_loop(mut stream: TcpStream, spec: OpenDeviceAck) -> Result<(), AttachFailure> {
+fn attach_xinput_loop(
+    mut stream: TcpStream,
+    spec: OpenDeviceAck,
+    stop_flag: Option<&Arc<AtomicBool>>,
+) -> Result<(), AttachFailure> {
     debug(&format!("Creating virtual XInput device for {}", spec.name));
     let mut device = XInput360Device::create(&spec)
         .map_err(|error| AttachFailure::Fatal(format!("failed to create virtual XInput device: {error}")))?;
     stream
         .set_nodelay(true)
         .map_err(|error| AttachFailure::Retryable(format!("failed to configure TCP stream: {error}")))?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .map_err(|error| AttachFailure::Retryable(format!("failed to configure TCP read timeout: {error}")))?;
 
     loop {
+        if stop_requested_flag(stop_flag) {
+            return Ok(());
+        }
         match read_message(&mut stream) {
             Ok(Message::InputReport { data }) => {
                 if let Err(error) = device.send_input_report(&data) {
@@ -510,6 +557,9 @@ fn attach_xinput_loop(mut stream: TcpStream, spec: OpenDeviceAck) -> Result<(), 
                 eprintln!("USBoss: ignoring unexpected message during xinput attach: {other:?}");
             }
             Err(error) => {
+                if is_retry_timeout(&error) && stop_requested_flag(stop_flag) {
+                    return Ok(());
+                }
                 return Err(AttachFailure::Retryable(format!("session ended: {error}")));
             }
         }
@@ -783,6 +833,7 @@ struct AttachConfig {
     preferred_matcher: Option<DeviceMatcher>,
     preferred_slot: usize,
     client_name: &'static str,
+    stop_flag: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone)]
@@ -950,6 +1001,41 @@ fn announce_retry(message: &str, delay: Duration) {
     thread::sleep(delay);
 }
 
+fn announce_retry_with_stop(message: &str, delay: Duration, config: &AttachConfig) -> bool {
+    eprintln!(
+        "USBoss: {message}. Retrying in {} ms.",
+        delay.as_millis()
+    );
+    sleep_interruptibly(delay, Some(config))
+}
+
+fn sleep_interruptibly(delay: Duration, config: Option<&AttachConfig>) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < delay {
+        if config.is_some_and(stop_requested) {
+            return true;
+        }
+        let remaining = delay.saturating_sub(started.elapsed());
+        thread::sleep(remaining.min(Duration::from_millis(100)));
+    }
+    config.is_some_and(stop_requested)
+}
+
+fn stop_requested(config: &AttachConfig) -> bool {
+    stop_requested_flag(config.stop_flag.as_ref())
+}
+
+fn stop_requested_flag(stop_flag: Option<&Arc<AtomicBool>>) -> bool {
+    stop_flag.is_some_and(|flag| flag.load(Ordering::Relaxed))
+}
+
+fn is_retry_timeout(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
+}
+
 fn can_try_next_device(
     error_message: &str,
     requested_device_id: Option<u32>,
@@ -983,6 +1069,7 @@ struct ManagedWorkerDescriptor {
 
 struct ManagedAttachWorker {
     label: String,
+    stop_flag: Arc<AtomicBool>,
     handle: thread::JoinHandle<()>,
 }
 
@@ -1107,6 +1194,8 @@ fn ensure_managed_worker(
     worker_config.preferred_slot = descriptor.slot_index;
     worker_config.requested_device_id = None;
     worker_config.once = false;
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    worker_config.stop_flag = Some(Arc::clone(&stop_flag));
 
     let label = descriptor.label.clone();
     let thread_label = label.clone();
@@ -1117,19 +1206,39 @@ fn ensure_managed_worker(
     });
 
     eprintln!("USBoss: supervising {label}");
-    workers.insert(descriptor.key, ManagedAttachWorker { label: descriptor.label, handle });
+    workers.insert(
+        descriptor.key,
+        ManagedAttachWorker {
+            label: descriptor.label,
+            stop_flag,
+            handle,
+        },
+    );
 }
 
 fn reap_finished_workers(workers: &mut HashMap<String, ManagedAttachWorker>, desired_keys: &HashSet<String>) {
-    let finished_keys: Vec<String> = workers
+    let obsolete_keys: Vec<String> = workers
         .iter()
         .filter_map(|(key, worker)| {
-            if worker.handle.is_finished() && !desired_keys.contains(key) {
+            if !desired_keys.contains(key) {
                 Some(key.clone())
             } else {
                 None
             }
         })
+        .collect();
+
+    for key in obsolete_keys {
+        if let Some(worker) = workers.remove(&key) {
+            worker.stop_flag.store(true, Ordering::Relaxed);
+            eprintln!("USBoss: stopped supervising {}", worker.label);
+            let _ = worker.handle.join();
+        }
+    }
+
+    let finished_keys: Vec<String> = workers
+        .iter()
+        .filter_map(|(key, worker)| worker.handle.is_finished().then(|| key.clone()))
         .collect();
 
     for key in finished_keys {
