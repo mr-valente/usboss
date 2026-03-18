@@ -75,7 +75,7 @@ object HostRuntime {
                     state.copy(connectedClient = client)
                 }
             },
-            devicesProvider = { state.value.devices.map { it.toSummary() } },
+            devicesProvider = { state.value.devices.filter(UsbCandidate::hasPermission).map { it.toSummary() } },
             openDevice = { id ->
                 val candidate = candidatesById[id]
                     ?: throw IllegalArgumentException("Unknown USB candidate id $id")
@@ -83,7 +83,10 @@ object HostRuntime {
             },
         ).also { it.start() }
 
-        val currentPaths = state.value.devices.map(UsbCandidate::systemPath).toSet()
+        val currentPaths = state.value.devices
+            .filter(UsbCandidate::hasPermission)
+            .map(UsbCandidate::systemPath)
+            .toSet()
         lastAdvertisedPaths = currentPaths
         server?.onAvailableDevicesChanged(currentPaths)
         mutableState.update {
@@ -116,8 +119,9 @@ object HostRuntime {
         ensureInitialized(context)
         runCatching {
             val devices = UsbDeviceCatalog.enumerate(context)
-            candidatesById = devices.associateBy { it.id }
-            val availablePaths = devices.map(UsbCandidate::systemPath).toSet()
+            val openableDevices = devices.filter(UsbCandidate::hasPermission)
+            candidatesById = openableDevices.associateBy { it.id }
+            val availablePaths = openableDevices.map(UsbCandidate::systemPath).toSet()
             if (availablePaths != lastAdvertisedPaths) {
                 lastAdvertisedPaths = availablePaths
                 server?.onAvailableDevicesChanged(availablePaths)
@@ -127,6 +131,7 @@ object HostRuntime {
                 current.copy(
                     devices = devices,
                     serverIp = serverIp,
+                    status = if (current.serviceRunning) listeningStatus(devices) else current.status,
                     lastError = null,
                 )
             }
@@ -234,6 +239,8 @@ object HostRuntime {
     private fun listeningStatus(devices: List<UsbCandidate>): String {
         return if (devices.isEmpty()) {
             "Listening for Linux clients (no supported USB devices yet)"
+        } else if (devices.none(UsbCandidate::hasPermission)) {
+            "Listening for Linux clients (USB permission needed)"
         } else {
             "Listening for Linux clients"
         }
