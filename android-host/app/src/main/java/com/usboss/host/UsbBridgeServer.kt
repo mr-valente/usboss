@@ -97,6 +97,7 @@ class UsbBridgeServer(
         onStatus("One or more active USB devices disconnected; waiting for them to return")
         onError("A currently forwarded USB device was unplugged.")
         affectedSessions.forEach { session ->
+            releaseDeviceForSession(session, reason = "device path disappeared")
             runCatching { session.socket.close() }
         }
     }
@@ -155,6 +156,14 @@ class UsbBridgeServer(
         var inputPump: Job? = null
         var forwardedReportCount = 0
 
+        fun closeActiveDevice(reason: String) {
+            val device = openedDevice ?: return
+            HostRuntime.debug("Session $sessionId releasing ${device.systemPath} ($reason)")
+            openedDevice = null
+            releaseDevice(sessionId)
+            runCatching { device.close() }
+        }
+
         try {
             session@ while (scope.isActive && !socket.isClosed) {
                 when (val message = Protocol.read(input)) {
@@ -171,9 +180,7 @@ class UsbBridgeServer(
                     is Protocol.Message.OpenDevice -> {
                         HostRuntime.note("Session $sessionId requested device ${message.deviceId}", addToRecent = true)
                         inputPump?.cancelAndJoin()
-                        openedDevice?.close()
-                        releaseDevice(sessionId)
-                        openedDevice = null
+                        closeActiveDevice("open-device reset")
 
                         val deviceResult = runCatching {
                             openDevice(message.deviceId)
@@ -235,6 +242,7 @@ class UsbBridgeServer(
                                 onError = { error ->
                                     onError(error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName)
                                     onStatus("USB device disconnected; waiting for Linux to reconnect")
+                                    closeActiveDevice("input pump error")
                                     runCatching { socket.close() }
                                 },
                             ).join()
@@ -350,7 +358,7 @@ class UsbBridgeServer(
         } finally {
             HostRuntime.debug("Cleaning up session $sessionId")
             inputPump?.cancelAndJoin()
-            openedDevice?.close()
+            closeActiveDevice("session cleanup")
             releaseDevice(sessionId, updatePresentation = false)
         }
     }
@@ -419,12 +427,20 @@ class UsbBridgeServer(
 
     private fun tryReserveDevice(sessionId: Long, systemPath: String): Boolean {
         val reserved = synchronized(sessionLock) {
-            val alreadyInUse = sessions.any { (id, session) ->
+            val conflictingSession = sessions.entries.firstOrNull { (id, session) ->
                 id != sessionId && session.activeDeviceSystemPath == systemPath
-            }
-            if (alreadyInUse) {
+            }?.value
+            if (conflictingSession != null && !isSessionSocketStale(conflictingSession)) {
                 false
             } else {
+                if (conflictingSession != null) {
+                    HostRuntime.debug(
+                        "Session $sessionId reclaimed stale reservation for $systemPath " +
+                            "from ${conflictingSession.clientLabel}",
+                    )
+                    conflictingSession.activeDeviceSystemPath = null
+                    conflictingSession.role = SessionRole.Monitoring
+                }
                 sessions[sessionId]?.let { session ->
                     session.activeDeviceSystemPath = systemPath
                     session.role = SessionRole.Forwarding
@@ -455,6 +471,27 @@ class UsbBridgeServer(
         if (updatePresentation) {
             updateSessionPresentation()
         }
+    }
+
+    private fun releaseDeviceForSession(session: ClientSession, reason: String) {
+        val changed = synchronized(sessionLock) {
+            val hadDevice = session.activeDeviceSystemPath != null
+            val roleChanged = session.role != SessionRole.Monitoring
+            session.activeDeviceSystemPath = null
+            session.role = SessionRole.Monitoring
+            hadDevice || roleChanged
+        }
+        if (changed) {
+            HostRuntime.debug(
+                "Released device reservation for ${session.clientLabel} " +
+                    "(${session.clientName}; $reason)",
+            )
+            updateSessionPresentation()
+        }
+    }
+
+    private fun isSessionSocketStale(session: ClientSession): Boolean {
+        return session.socket.isClosed || session.socket.isInputShutdown || session.socket.isOutputShutdown
     }
 
     private fun sessionRoleLabel(sessionId: Long): String {
