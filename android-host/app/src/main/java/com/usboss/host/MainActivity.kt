@@ -167,9 +167,9 @@ private fun UsbBossScreen(
                             SectionHeader(
                                 title = "Controllers",
                                 subtitle = if (state.devices.isEmpty()) {
-                                    "No controllers are active right now."
+                                    null
                                 } else {
-                                    "${state.devices.size} controller${if (state.devices.size == 1) "" else "s"} visible on this Android host."
+                                    "${state.devices.size} detected"
                                 },
                             )
                         }
@@ -507,7 +507,7 @@ private fun StatChip(label: String, accent: Color) {
 @Composable
 private fun SectionHeader(
     title: String,
-    subtitle: String,
+    subtitle: String?,
 ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -518,11 +518,13 @@ private fun SectionHeader(
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
         )
-        Text(
-            text = subtitle,
-            color = UsbBossPalette.textMuted,
-            style = MaterialTheme.typography.bodyMedium,
-        )
+        if (!subtitle.isNullOrBlank()) {
+            Text(
+                text = subtitle,
+                color = UsbBossPalette.textMuted,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
     }
 }
 
@@ -564,17 +566,9 @@ private fun EmptyStateCard() {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(
-                text = "No supported controller interfaces detected.",
+                text = "No controllers.",
                 color = UsbBossPalette.textPrimary,
                 fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = "It is fine to leave the host running before a controller is plugged in. Linux attach-all can stay connected and wait.",
-                color = UsbBossPalette.textSecondary,
-            )
-            Text(
-                text = "USBoss prefers XInput 360 interfaces for 8BitDo dongles and still supports HID devices when available.",
-                color = UsbBossPalette.textMuted,
             )
         }
     }
