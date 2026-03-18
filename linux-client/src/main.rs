@@ -21,7 +21,7 @@ use protocol::{
 use uhid::UhidDevice;
 use uinput::XInput360Device;
 
-const BUILD_FINGERPRINT: &str = "v0.1.1-xinput-hotpath-fix-2026-03-17";
+const BUILD_FINGERPRINT: &str = "v0.1.1-ignore-idle-state-2026-03-17";
 
 fn main() {
     if let Err(error) = run() {
@@ -988,8 +988,12 @@ struct ManagedAttachWorker {
 
 fn build_managed_worker_descriptors(devices: &[DeviceSummary]) -> Vec<ManagedWorkerDescriptor> {
     let preferred_devices = prefer_xinput_siblings(devices);
+    let filtered_devices: Vec<&DeviceSummary> = preferred_devices
+        .into_iter()
+        .filter(|device| !is_ignored_placeholder_device(device))
+        .collect();
     let mut groups: BTreeMap<String, Vec<DeviceSummary>> = BTreeMap::new();
-    for device in preferred_devices {
+    for device in filtered_devices {
         groups
             .entry(managed_group_key(device))
             .or_default()
@@ -1035,6 +1039,21 @@ fn prefer_xinput_siblings<'a>(devices: &'a [DeviceSummary]) -> Vec<&'a DeviceSum
         filtered.push(device);
     }
     filtered
+}
+
+fn is_ignored_placeholder_device(device: &DeviceSummary) -> bool {
+    let ignored = device.vendor_id == 0x2dc8
+        && (device.product_id == 0x301c || device.product.eq_ignore_ascii_case("IDLE"));
+    if ignored {
+        debug(&format!(
+            "Ignoring transient placeholder device {} {}:{} {}",
+            device.system_path,
+            format!("{:04x}", device.vendor_id),
+            format!("{:04x}", device.product_id),
+            device.product
+        ));
+    }
+    ignored
 }
 
 fn system_path_root(system_path: &str) -> &str {

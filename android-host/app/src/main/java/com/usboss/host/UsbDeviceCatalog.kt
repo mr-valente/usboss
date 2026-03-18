@@ -138,6 +138,15 @@ object UsbDeviceCatalog {
         usbManager: UsbManager,
         device: UsbDevice,
     ): List<UsbCandidate> {
+        if (isIgnoredPlaceholderDevice(device)) {
+            HostRuntime.debug(
+                "Ignoring transient placeholder USB device ${device.deviceName} " +
+                    "${device.vendorId.toString(16).padStart(4, '0')}:${device.productId.toString(16).padStart(4, '0')} " +
+                    "${runCatching { device.manufacturerName }.getOrNull().orEmpty()} " +
+                    "${runCatching { device.productName }.getOrNull().orEmpty()}",
+            )
+            return emptyList()
+        }
         val candidates = (0 until device.interfaceCount)
             .map(device::getInterface)
             .filter { usbInterface ->
@@ -201,6 +210,20 @@ object UsbDeviceCatalog {
         } else {
             null
         }
+    }
+
+    private fun isIgnoredPlaceholderDevice(device: UsbDevice): Boolean {
+        val manufacturer = runCatching { device.manufacturerName }.getOrNull().orEmpty()
+        val product = runCatching { device.productName }.getOrNull().orEmpty()
+        return device.vendorId == VENDOR_8BITDO &&
+            (
+                device.productId == 0x301c ||
+                    product.equals("IDLE", ignoreCase = true) ||
+                    (
+                        manufacturer.equals("8BitDo", ignoreCase = true) &&
+                            product.contains("IDLE", ignoreCase = true)
+                        )
+                )
     }
 
     private fun UsbInterface.findInterruptEndpoint(direction: Int): UsbEndpoint? {
