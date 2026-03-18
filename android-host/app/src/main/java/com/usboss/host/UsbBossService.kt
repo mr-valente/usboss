@@ -109,8 +109,17 @@ class UsbBossService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 HostRuntime.ACTION_USB_PERMISSION -> {
+                    val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     HostRuntime.refreshDevices(context)
-                    HostRuntime.note("USB permission updated", addToRecent = true)
+                    if (granted) {
+                        HostRuntime.requestPermissions(context)
+                        HostRuntime.note(
+                            "USB permission granted; requesting any remaining controllers",
+                            addToRecent = true,
+                        )
+                    } else {
+                        HostRuntime.note("USB permission denied", addToRecent = true)
+                    }
                 }
 
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
