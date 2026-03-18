@@ -49,15 +49,21 @@ object UsbDeviceCatalog {
             Intent(action).setPackage(context.packageName),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        devices
+        val nextCandidate = devices
             .filterNot { it.hasPermission }
             .distinctBy { it.deviceName }
-            .forEach { candidate ->
-                HostRuntime.debug("Requesting permission for ${candidate.displayName} at ${candidate.systemPath}")
-                usbManager.deviceList[candidate.deviceName]?.let { device ->
-                    usbManager.requestPermission(device, permissionIntent)
-                }
+            .firstOrNull()
+
+        if (nextCandidate != null) {
+            HostRuntime.debug(
+                "Requesting permission for ${nextCandidate.displayName} at ${nextCandidate.systemPath}",
+            )
+            usbManager.deviceList[nextCandidate.deviceName]?.let { device ->
+                usbManager.requestPermission(device, permissionIntent)
             }
+        } else {
+            HostRuntime.debug("No additional USB permission requests are pending")
+        }
     }
 
     fun open(context: Context, candidate: UsbCandidate): OpenedUsbDevice {
