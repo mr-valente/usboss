@@ -12,6 +12,7 @@ data class HostUiState(
     val startOnBoot: Boolean = false,
     val verboseLogging: Boolean = false,
     val recentEvents: List<String> = emptyList(),
+    val activeInputPaths: Set<String> = emptySet(),
 )
 
 data class UsbCandidate(

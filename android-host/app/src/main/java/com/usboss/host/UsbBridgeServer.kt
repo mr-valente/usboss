@@ -11,6 +11,7 @@ import android.util.Log
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.EOFException
+import java.net.SocketException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.ServerSocket
@@ -123,7 +124,11 @@ class UsbBridgeServer(
                 try {
                     handleClient(sessionId, socket)
                 } catch (error: Throwable) {
-                    onError(error.message ?: "Client session failed")
+                    if (!shouldSuppressSessionError(error, socket)) {
+                        onError(error.message ?: "Client session failed")
+                    } else {
+                        HostRuntime.debug("Ignoring expected session shutdown for session $sessionId: ${error.javaClass.simpleName}")
+                    }
                 } finally {
                     runCatching { socket.close() }
                     removeSession(sessionId)
@@ -216,11 +221,14 @@ class UsbBridgeServer(
                                                 "for ${device.systemPath} (${report.size} bytes)",
                                         )
                                     }
+                                    HostRuntime.noteInputActivity(device.systemPath)
                                     writeFrame(Protocol.Message.InputReport(report))
                                 },
                                 onError = { error ->
-                                    onError(error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName)
-                                    onStatus("USB device disconnected; waiting for Linux to reconnect")
+                                    if (!stopping) {
+                                        onError(error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName)
+                                        onStatus("USB device disconnected; waiting for Linux to reconnect")
+                                    }
                                     closeActiveDevice("input pump error")
                                     runCatching { socket.close() }
                                 },
@@ -527,6 +535,14 @@ class UsbBridgeServer(
         synchronized(sessionLock) {
             sessions.clear()
         }
+    }
+
+    private fun shouldSuppressSessionError(error: Throwable, socket: Socket): Boolean {
+        if (stopping) {
+            return true
+        }
+        return error is SocketException &&
+            (socket.isClosed || error.message.equals("Socket closed", ignoreCase = true))
     }
 
     companion object {

@@ -14,12 +14,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -107,6 +111,7 @@ private fun UsbBossScreen(
     onClearEvents: () -> Unit,
 ) {
     var showConnectionInfo by remember { mutableStateOf(false) }
+    var showLogs by remember { mutableStateOf(false) }
     val background = Brush.verticalGradient(
         listOf(
             UsbBossPalette.canvas,
@@ -138,6 +143,7 @@ private fun UsbBossScreen(
                             onToggleStartOnBoot = onToggleStartOnBoot,
                             onToggleVerbose = onToggleVerbose,
                             onShowConnectionInfo = { showConnectionInfo = true },
+                            onShowLogs = { showLogs = true },
                         )
                     },
                 ) { innerPadding ->
@@ -159,11 +165,11 @@ private fun UsbBossScreen(
 
                         item {
                             SectionHeader(
-                                title = "Connected Controllers",
+                                title = "Controllers",
                                 subtitle = if (state.devices.isEmpty()) {
-                                    "USBoss is ready and waiting for supported USB controller interfaces."
+                                    "No controllers are active right now."
                                 } else {
-                                    "${state.devices.size} controller interface(s) currently visible on the Android host."
+                                    "${state.devices.size} controller${if (state.devices.size == 1) "" else "s"} visible on this Android host."
                                 },
                             )
                         }
@@ -177,18 +183,13 @@ private fun UsbBossScreen(
                                 items = state.devices,
                                 key = { candidate -> candidate.systemPath },
                             ) { candidate ->
-                                DeviceCard(candidate)
-                            }
-                        }
-
-                        if (state.verboseLogging || state.recentEvents.isNotEmpty()) {
-                            item {
-                                RecentEventsCard(
-                                    state = state,
-                                    onClearEvents = onClearEvents,
+                                DeviceCard(
+                                    candidate = candidate,
+                                    isActive = candidate.systemPath in state.activeInputPaths,
                                 )
                             }
                         }
+
                     }
                 }
 
@@ -196,6 +197,14 @@ private fun UsbBossScreen(
                     ConnectionInfoDialog(
                         state = state,
                         onDismiss = { showConnectionInfo = false },
+                    )
+                }
+
+                if (showLogs) {
+                    LogsDialog(
+                        state = state,
+                        onDismiss = { showLogs = false },
+                        onClearEvents = onClearEvents,
                     )
                 }
             }
@@ -213,10 +222,12 @@ private fun FixedHeader(
     onToggleStartOnBoot: () -> Unit,
     onToggleVerbose: () -> Unit,
     onShowConnectionInfo: () -> Unit,
+    onShowLogs: () -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .statusBarsPadding()
             .padding(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -230,6 +241,7 @@ private fun FixedHeader(
             onToggleStartOnBoot = onToggleStartOnBoot,
             onToggleVerbose = onToggleVerbose,
             onShowConnectionInfo = onShowConnectionInfo,
+            onShowLogs = onShowLogs,
         )
     }
 }
@@ -325,6 +337,7 @@ private fun ControlDeck(
     onToggleStartOnBoot: () -> Unit,
     onToggleVerbose: () -> Unit,
     onShowConnectionInfo: () -> Unit,
+    onShowLogs: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -376,6 +389,22 @@ private fun ControlDeck(
                     Text("Refresh")
                 }
                 Button(
+                    onClick = onShowLogs,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = UsbBossPalette.surface,
+                        contentColor = UsbBossPalette.textPrimary,
+                    ),
+                ) {
+                    Text("Show Logs")
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Button(
                     onClick = onShowConnectionInfo,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(
@@ -385,18 +414,18 @@ private fun ControlDeck(
                 ) {
                     Text("Connection Info")
                 }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
                 ToggleActionButton(
                     label = if (state.startOnBoot) "Boot: On" else "Boot: Off",
                     active = state.startOnBoot,
                     modifier = Modifier.weight(1f),
                     onClick = onToggleStartOnBoot,
                 )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 ToggleActionButton(
                     label = if (state.verboseLogging) "Verbose: On" else "Verbose: Off",
                     active = state.verboseLogging,
@@ -552,8 +581,25 @@ private fun EmptyStateCard() {
 }
 
 @Composable
-private fun DeviceCard(candidate: UsbCandidate) {
-    val permissionAccent = if (candidate.hasPermission) UsbBossPalette.success else UsbBossPalette.warning
+private fun DeviceCard(
+    candidate: UsbCandidate,
+    isActive: Boolean,
+) {
+    val stateEmoji = when {
+        !candidate.hasPermission -> "🔒"
+        isActive -> "🎮"
+        else -> "🔌"
+    }
+    val stateLabel = when {
+        !candidate.hasPermission -> "Permission needed"
+        isActive -> "Input active"
+        else -> "Connected"
+    }
+    val accent = when {
+        !candidate.hasPermission -> UsbBossPalette.warning
+        isActive -> UsbBossPalette.success
+        else -> UsbBossPalette.pink
+    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
@@ -573,29 +619,25 @@ private fun DeviceCard(candidate: UsbCandidate) {
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text(
-                        text = candidate.displayName,
+                        text = "$stateEmoji ${candidate.displayName}",
                         color = UsbBossPalette.textPrimary,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = "${candidate.transportLabel}  iface ${candidate.interfaceNumber}",
-                        color = UsbBossPalette.pink,
+                        text = stateLabel,
+                        color = accent,
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
                 Spacer(Modifier.width(12.dp))
                 StatChip(
-                    label = if (candidate.hasPermission) "Permission granted" else "Permission needed",
-                    accent = permissionAccent,
+                    label = candidate.transportLabel,
+                    accent = accent,
                 )
             }
 
             Text(
-                text = "VID:PID ${candidate.vendorId.toString(16).padStart(4, '0')}:${candidate.productId.toString(16).padStart(4, '0')}",
-                color = UsbBossPalette.textSecondary,
-            )
-            Text(
-                text = "Input ${candidate.inputPacketSize} bytes  Output ${candidate.outputPacketSize} bytes",
+                text = "iface ${candidate.interfaceNumber}  VID:PID ${candidate.vendorId.toString(16).padStart(4, '0')}:${candidate.productId.toString(16).padStart(4, '0')}",
                 color = UsbBossPalette.textSecondary,
             )
             Text(
@@ -608,75 +650,73 @@ private fun DeviceCard(candidate: UsbCandidate) {
 }
 
 @Composable
-private fun RecentEventsCard(
+private fun LogsDialog(
     state: HostUiState,
+    onDismiss: () -> Unit,
     onClearEvents: () -> Unit,
 ) {
     val recentEvents = state.recentEvents.takeLast(10).asReversed()
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = UsbBossPalette.surfaceMuted.copy(alpha = 0.94f)),
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Recent Activity",
+                color = UsbBossPalette.textPrimary,
+                fontWeight = FontWeight.Bold,
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        text = "Recent Activity",
-                        color = UsbBossPalette.textPrimary,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        text = if (state.verboseLogging) {
-                            "Verbose logging is enabled. These events mirror the most useful USBoss runtime breadcrumbs."
-                        } else {
-                            "Turn on verbose logging for deeper hardware diagnostics."
-                        },
-                        color = UsbBossPalette.textMuted,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Button(
-                    onClick = onClearEvents,
-                    enabled = state.recentEvents.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = UsbBossPalette.surface,
-                        contentColor = UsbBossPalette.textPrimary,
-                    ),
-                ) {
-                    Text("Clear")
-                }
-            }
-
-            if (recentEvents.isEmpty()) {
                 Text(
-                    text = "No recent events captured yet.",
-                    color = UsbBossPalette.textSecondary,
+                    text = if (state.verboseLogging) {
+                        "Verbose logging is enabled. These events mirror the most useful USBoss runtime breadcrumbs."
+                    } else {
+                        "Turn on verbose logging for deeper hardware diagnostics."
+                    },
+                    color = UsbBossPalette.textMuted,
+                    style = MaterialTheme.typography.bodySmall,
                 )
-            } else {
-                recentEvents.forEach { event ->
-                    SelectionContainer {
-                        Text(
-                            text = event,
-                            color = UsbBossPalette.textSecondary,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+
+                if (recentEvents.isEmpty()) {
+                    Text(
+                        text = "No recent events captured yet.",
+                        color = UsbBossPalette.textSecondary,
+                    )
+                } else {
+                    recentEvents.forEach { event ->
+                        SelectionContainer {
+                            Text(
+                                text = event,
+                                color = UsbBossPalette.textSecondary,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                     }
                 }
             }
-        }
-    }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = UsbBossPalette.pink)
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onClearEvents,
+                enabled = state.recentEvents.isNotEmpty(),
+            ) {
+                Text("Clear", color = UsbBossPalette.textSecondary)
+            }
+        },
+        containerColor = UsbBossPalette.surfaceRaised,
+        shape = RoundedCornerShape(28.dp),
+    )
 }
 
 @Composable
