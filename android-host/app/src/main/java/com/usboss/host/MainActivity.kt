@@ -185,7 +185,6 @@ private fun UsbBossScreen(
                             ) { candidate ->
                                 DeviceCard(
                                     candidate = candidate,
-                                    isActive = candidate.systemPath in state.activeInputPaths,
                                 )
                             }
                         }
@@ -577,23 +576,10 @@ private fun EmptyStateCard() {
 @Composable
 private fun DeviceCard(
     candidate: UsbCandidate,
-    isActive: Boolean,
 ) {
-    val stateEmoji = when {
-        !candidate.hasPermission -> "🔒"
-        isActive -> "🎮"
-        else -> "🔌"
-    }
-    val stateLabel = when {
-        !candidate.hasPermission -> "Permission needed"
-        isActive -> "Input active"
-        else -> "Connected"
-    }
-    val accent = when {
-        !candidate.hasPermission -> UsbBossPalette.warning
-        isActive -> UsbBossPalette.success
-        else -> UsbBossPalette.pink
-    }
+    val stateEmoji = if (candidate.hasPermission) "🎮" else "🔒"
+    val stateLabel = if (candidate.hasPermission) "Ready" else "Permission needed"
+    val accent = if (candidate.hasPermission) UsbBossPalette.pink else UsbBossPalette.warning
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),

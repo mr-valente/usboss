@@ -7,6 +7,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -142,10 +144,10 @@ class UsbBridgeServer(
 
         val input = BufferedInputStream(socket.getInputStream())
         val output = BufferedOutputStream(socket.getOutputStream())
-        val writerLock = Any()
+        val writerMutex = Mutex()
 
-        fun writeFrame(message: Protocol.Message) {
-            synchronized(writerLock) {
+        suspend fun writeFrame(message: Protocol.Message) {
+            writerMutex.withLock {
                 Protocol.write(output, message)
             }
         }
@@ -221,8 +223,11 @@ class UsbBridgeServer(
                                                 "for ${device.systemPath} (${report.size} bytes)",
                                         )
                                     }
-                                    writeFrame(Protocol.Message.InputReport(report))
-                                    HostRuntime.noteInputActivity(device.systemPath)
+                                    // Keep USB reads decoupled from socket flushes; synchronous
+                                    // writes here add noticeable controller latency on Shield.
+                                    launch {
+                                        writeFrame(Protocol.Message.InputReport(report))
+                                    }
                                 },
                                 onError = { error ->
                                     if (!stopping) {

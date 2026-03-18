@@ -27,8 +27,6 @@ object HostRuntime {
     private const val KEY_VERBOSE_LOGGING = "verbose_logging"
     private const val REFRESH_LOOP_MS = 4_000L
     private const val MAX_RECENT_EVENTS = 80
-    private const val ACTIVE_INPUT_WINDOW_MS = 3_500L
-    private const val INPUT_ACTIVITY_THROTTLE_MS = 300L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutableState = MutableStateFlow(HostUiState())
@@ -49,8 +47,6 @@ object HostRuntime {
 
     @Volatile
     private var lastAdvertisedPaths: Set<String> = emptySet()
-
-    private val inputActivityAt = mutableMapOf<String, Long>()
 
     fun initialize(context: Context) {
         ensureInitialized(context)
@@ -110,7 +106,6 @@ object HostRuntime {
         server?.stop()
         server = null
         lastAdvertisedPaths = emptySet()
-        clearInputActivity()
         mutableState.update {
             it.copy(
                 serviceRunning = false,
@@ -132,7 +127,6 @@ object HostRuntime {
                 lastAdvertisedPaths = availablePaths
                 server?.onAvailableDevicesChanged(availablePaths)
             }
-            pruneInputActivity(availablePaths)
             val serverIp = if (refreshNetwork || state.value.serverIp.isBlank()) {
                 findLocalIpv4Address().orEmpty()
             } else {
@@ -217,21 +211,6 @@ object HostRuntime {
     fun clearRecentEvents() {
         Log.i(TAG, "Cleared recent event log")
         mutableState.update { it.copy(recentEvents = emptyList()) }
-    }
-
-    fun noteInputActivity(systemPath: String) {
-        val now = System.currentTimeMillis()
-        var shouldPublish = false
-        synchronized(inputActivityAt) {
-            val previous = inputActivityAt[systemPath] ?: 0L
-            if (now - previous >= INPUT_ACTIVITY_THROTTLE_MS) {
-                inputActivityAt[systemPath] = now
-                shouldPublish = true
-            }
-        }
-        if (shouldPublish) {
-            publishInputActivity()
-        }
     }
 
     fun debug(message: String) {
@@ -327,7 +306,6 @@ object HostRuntime {
                     break
                 }
                 runCatching {
-                    publishInputActivity()
                     refreshDevices(context, refreshNetwork = false)
                 }.onFailure { error ->
                     logError("Background USB refresh failed", error)
@@ -353,36 +331,6 @@ object HostRuntime {
         val line = "$timestamp [$level] $message"
         mutableState.update { current ->
             current.copy(recentEvents = (current.recentEvents + line).takeLast(MAX_RECENT_EVENTS))
-        }
-    }
-
-    private fun clearInputActivity() {
-        synchronized(inputActivityAt) {
-            inputActivityAt.clear()
-        }
-        mutableState.update { it.copy(activeInputPaths = emptySet()) }
-    }
-
-    private fun pruneInputActivity(visiblePaths: Set<String>) {
-        val now = System.currentTimeMillis()
-        synchronized(inputActivityAt) {
-            inputActivityAt.entries.removeAll { (systemPath, timestamp) ->
-                systemPath !in visiblePaths || now - timestamp > ACTIVE_INPUT_WINDOW_MS
-            }
-        }
-        publishInputActivity()
-    }
-
-    private fun publishInputActivity() {
-        val now = System.currentTimeMillis()
-        val activePaths = synchronized(inputActivityAt) {
-            inputActivityAt.entries.removeAll { (_, timestamp) ->
-                now - timestamp > ACTIVE_INPUT_WINDOW_MS
-            }
-            inputActivityAt.keys.toSet()
-        }
-        mutableState.update { current ->
-            if (current.activeInputPaths == activePaths) current else current.copy(activeInputPaths = activePaths)
         }
     }
 

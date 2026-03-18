@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::mem::{size_of, zeroed};
@@ -440,7 +440,6 @@ where
 {
     let fd = file.as_raw_fd();
     let mut effects = HashMap::<i16, FfRumbleEffect>::new();
-    let mut active_effects = HashSet::<i16>::new();
     let mut last_command = RumbleCommand::default();
 
     loop {
@@ -475,32 +474,14 @@ where
         match event.type_ {
             EV_UINPUT => match event.code {
                 UI_FF_UPLOAD => {
-                    let changed_effect = handle_ff_upload(fd, event.value as u32, &mut effects)?;
-                    if changed_effect.is_some_and(|effect_id| active_effects.contains(&effect_id)) {
-                        let command = combined_rumble_command(&effects, &active_effects);
-                        if command != last_command {
-                            debug(&format!(
-                                "Updated active rumble effect -> strong={} weak={}",
-                                command.strong_magnitude, command.weak_magnitude
-                            ));
-                            on_rumble(command)?;
-                            last_command = command;
-                        }
-                    }
+                    let _ = handle_ff_upload(fd, event.value as u32, &mut effects)?;
                 }
                 UI_FF_ERASE => {
                     let erased_effect = handle_ff_erase(fd, event.value as u32, &mut effects)?;
-                    if let Some(effect_id) = erased_effect {
-                        active_effects.remove(&effect_id);
-                        let command = combined_rumble_command(&effects, &active_effects);
-                        if command != last_command {
-                            debug(&format!(
-                                "Erased active rumble effect -> strong={} weak={}",
-                                command.strong_magnitude, command.weak_magnitude
-                            ));
-                            on_rumble(command)?;
-                            last_command = command;
-                        }
+                    if erased_effect.is_some() && last_command != RumbleCommand::default() {
+                        debug("Erased rumble effect; sending stop command");
+                        on_rumble(RumbleCommand::default())?;
+                        last_command = RumbleCommand::default();
                     }
                 }
                 _ => {}
@@ -511,13 +492,18 @@ where
                 }
 
                 let effect_id = event.code as i16;
-                if event.value == 0 {
-                    active_effects.remove(&effect_id);
+                let command = if event.value == 0 {
+                    RumbleCommand::default()
                 } else {
-                    active_effects.insert(effect_id);
-                }
-
-                let command = combined_rumble_command(&effects, &active_effects);
+                    effects
+                        .get(&effect_id)
+                        .copied()
+                        .map(|effect| RumbleCommand {
+                            strong_magnitude: effect.strong_magnitude,
+                            weak_magnitude: effect.weak_magnitude,
+                        })
+                        .unwrap_or_default()
+                };
                 if command != last_command {
                     debug(&format!(
                         "Forwarding rumble effect {} value={} -> strong={} weak={}",
@@ -580,20 +566,6 @@ fn handle_ff_erase(
     ioctl_struct(fd, UI_END_FF_ERASE, &mut erase)?;
     debug(&format!("Erased rumble effect {}", effect_id));
     Ok(Some(effect_id))
-}
-
-fn combined_rumble_command(
-    effects: &HashMap<i16, FfRumbleEffect>,
-    active_effects: &HashSet<i16>,
-) -> RumbleCommand {
-    let mut command = RumbleCommand::default();
-    for effect_id in active_effects {
-        if let Some(effect) = effects.get(effect_id) {
-            command.strong_magnitude = command.strong_magnitude.max(effect.strong_magnitude);
-            command.weak_magnitude = command.weak_magnitude.max(effect.weak_magnitude);
-        }
-    }
-    command
 }
 
 struct XInput360State {

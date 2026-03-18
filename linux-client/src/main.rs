@@ -22,7 +22,7 @@ use protocol::{
 use uhid::UhidDevice;
 use uinput::{RumbleCommand, XInput360Device};
 
-const BUILD_FINGERPRINT: &str = "v0.1.1-rumble-pass-2026-03-18";
+const BUILD_FINGERPRINT: &str = "v0.1.1-rumble-stopfix-2026-03-18";
 
 fn main() {
     if let Err(error) = run() {
@@ -530,6 +530,9 @@ fn attach_xinput_loop(
     ));
     let rumble_stop = Arc::new(AtomicBool::new(false));
     let rumble_thread = if spec.has_interrupt_out && spec.output_packet_size > 0 {
+        if let Err(error) = send_xinput_rumble(&writer, RumbleCommand::default()) {
+            debug(&format!("Failed to send initial neutral rumble packet: {error}"));
+        }
         let writer_for_thread = Arc::clone(&writer);
         let stop_for_thread = Arc::clone(&rumble_stop);
         Some(
