@@ -91,6 +91,8 @@ sudo build-artifacts/linux/usboss-client attach-all --host SHIELD_IP:35355 --ver
 - XInput devices use `/dev/uinput`
 - HID devices use `/dev/uhid`
 - If needed, install the udev rule from `docs/99-usboss-uhid.rules` to avoid running the Linux client as `root`
+- After an Android reboot, the USB host service can restart automatically with `Boot: On`
+- Android USB permission may still need to be re-approved after a reboot before controllers become available again
 
 If you are using Moonlight and Sunshine, avoid double input by disabling duplicate gamepad forwarding on one side of the session.
 
@@ -141,6 +143,7 @@ adb logcat -s USBoss
 - Xbox One / GIP devices are not implemented
 - The Linux XInput backend is input-only today
 - Rumble is not implemented yet
+- With multiple controllers already powered on during an Android reboot, the second controller may require one manual `Grant USB` action before it reconnects
 
 ## License
 

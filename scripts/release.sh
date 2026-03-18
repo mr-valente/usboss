@@ -7,10 +7,10 @@ Usage:
   ./scripts/release.sh <version> [options]
 
 Examples:
-  ./scripts/release.sh v0.1.0
-  ./scripts/release.sh 0.1.0 --publish
-  ./scripts/release.sh v0.1.0 --skip-build --notes-file /path/to/notes.md
-  ./scripts/release.sh v0.1.0 --assets-only
+  ./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md
+  ./scripts/release.sh 0.1.1 --publish --notes-file /path/to/notes.md
+  ./scripts/release.sh v0.1.1 --skip-build --notes-file /path/to/notes.md
+  ./scripts/release.sh v0.1.1 --assets-only
 
 What it does:
   1. Builds USBoss with the Docker build helper unless --skip-build is passed
@@ -200,7 +200,7 @@ main() {
     cat > "$generated_notes" <<EOF
 # USBoss ${version}
 
-Known-good release of USBoss for the original Shield + Linux controller-forwarding setup.
+USB controller bridge release for Android and Linux.
 
 Tested working with:
 - Android host on NVIDIA Shield / Android TV
@@ -214,7 +214,7 @@ Assets:
 
 Notes:
 - The Android APK is debug-signed for sideload/testing convenience.
-- This release reflects the currently known-good real-hardware setup before v0.1.1 polish work.
+- Linux requires \`uinput\` for XInput devices and \`uhid\` for HID devices.
 EOF
   fi
 

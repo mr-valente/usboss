@@ -6,13 +6,13 @@ The easiest path is the release helper script:
 
 ```bash
 chmod +x scripts/release.sh
-./scripts/release.sh v0.1.0
+./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md
 ```
 
 By default, that script will:
 
 1. build both artifacts with [docker/run-build.sh](/Users/nick.valente/.dev/usboss/docker/run-build.sh)
-2. package release assets into `release-assets/v0.1.0/`
+2. package release assets into `release-assets/<version>/`
 3. generate default release notes
 4. create and push the git tag
 5. create a **draft** GitHub release with downloadable assets
@@ -24,14 +24,14 @@ That default is intentional. A draft release gives you one last chance to inspec
 If your Docker setup requires `sudo`, the helper now supports that cleanly:
 
 ```bash
-sudo ./scripts/release.sh v0.1.0
+sudo ./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md
 ```
 
 When run this way, the script will:
 
 - run the Docker build as root
 - package the release assets
-- hand ownership of `release-assets/v0.1.0/` back to your original user
+- hand ownership of `release-assets/<version>/` back to your original user
 - run `git` and `gh` as the original invoking user from `SUDO_USER`
 
 That means your GitHub login should remain the normal one you already configured as `nicholas`.
@@ -66,17 +66,19 @@ If the working tree is not clean, either commit the changes first or use `--allo
 Run:
 
 ```bash
-./scripts/release.sh v0.1.0
+./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md
 ```
 
 The resulting release assets will be:
 
-- `release-assets/v0.1.0/usboss-v0.1.0-android-debug.apk`
-- `release-assets/v0.1.0/usboss-client-v0.1.0-linux-x86_64.tar.gz`
-- `release-assets/v0.1.0/SHA256SUMS.txt`
-- `release-assets/v0.1.0/RELEASE_NOTES.md`
+- `release-assets/v0.1.1/usboss-v0.1.1-android-debug.apk`
+- `release-assets/v0.1.1/usboss-client-v0.1.1-linux-x86_64.tar.gz`
+- `release-assets/v0.1.1/SHA256SUMS.txt`
+- `release-assets/v0.1.1/RELEASE_NOTES.md`
 
-The generated release notes are good enough for a first known-good release and can be edited later either:
+If you pass `--notes-file`, the helper copies that file into the release bundle and uses it for the GitHub release body.
+
+If you do not pass `--notes-file`, the helper generates a simple fallback notes file that can still be edited later either:
 
 - in the local `RELEASE_NOTES.md` before rerunning, or
 - directly in the GitHub draft release page
@@ -86,7 +88,7 @@ The generated release notes are good enough for a first known-good release and c
 ### Publish immediately
 
 ```bash
-./scripts/release.sh v0.1.0 --publish
+./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md --publish
 ```
 
 ### Reuse existing build artifacts
@@ -94,13 +96,13 @@ The generated release notes are good enough for a first known-good release and c
 This is useful if you already built with Docker and only want to recreate the packaged assets or release:
 
 ```bash
-./scripts/release.sh v0.1.0 --skip-build
+./scripts/release.sh v0.1.1 --skip-build --notes-file docs/releases/v0.1.1.md
 ```
 
 ### Use your own notes file
 
 ```bash
-./scripts/release.sh v0.1.0 --notes-file /path/to/release-notes.md
+./scripts/release.sh v0.1.1 --notes-file /path/to/release-notes.md
 ```
 
 ### Package assets only
@@ -108,17 +110,17 @@ This is useful if you already built with Docker and only want to recreate the pa
 This is the safest dry run:
 
 ```bash
-./scripts/release.sh v0.1.0 --assets-only
+./scripts/release.sh v0.1.1 --assets-only --notes-file docs/releases/v0.1.1.md
 ```
 
 That stops before any `git push`, tag push, or GitHub release creation.
 
-## Recommended workflow for v0.1.0
+## Recommended workflow for v0.1.1
 
 For your current state, I recommend:
 
 ```bash
-sudo ./scripts/release.sh v0.1.0
+sudo ./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md
 ```
 
 Then:
@@ -132,9 +134,9 @@ This keeps the automation high while still giving you a safe final review step.
 
 ## Notes about the APK
 
-For `v0.1.0`, the Android asset is intentionally packaged as a debug APK:
+For `v0.1.1`, the Android asset is intentionally packaged as a debug APK:
 
-- filename: `usboss-v0.1.0-android-debug.apk`
+- filename: `usboss-v0.1.1-android-debug.apk`
 - intended for sideloading and known-good testing
 
-That is fine for the first release. For a more polished `v0.1.1`, you will probably want a proper signed release build.
+That is still acceptable for the current release. A later release can switch to a proper signed release APK if you want a more polished Android distribution story.
