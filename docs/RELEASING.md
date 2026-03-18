@@ -6,7 +6,7 @@ The easiest path is the release helper script:
 
 ```bash
 chmod +x scripts/release.sh
-./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md
+./scripts/release.sh v0.2.0 --notes-file docs/releases/v0.2.0.md
 ```
 
 By default, that script will:
@@ -24,7 +24,7 @@ That default is intentional. A draft release gives you one last chance to inspec
 If your Docker setup requires `sudo`, the helper now supports that cleanly:
 
 ```bash
-sudo ./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md
+sudo ./scripts/release.sh v0.2.0 --notes-file docs/releases/v0.2.0.md
 ```
 
 When run this way, the script will:
@@ -66,15 +66,15 @@ If the working tree is not clean, either commit the changes first or use `--allo
 Run:
 
 ```bash
-./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md
+./scripts/release.sh v0.2.0 --notes-file docs/releases/v0.2.0.md
 ```
 
 The resulting release assets will be:
 
-- `release-assets/v0.1.1/usboss-v0.1.1-android-debug.apk`
-- `release-assets/v0.1.1/usboss-client-v0.1.1-linux-x86_64.tar.gz`
-- `release-assets/v0.1.1/SHA256SUMS.txt`
-- `release-assets/v0.1.1/RELEASE_NOTES.md`
+- `release-assets/v0.2.0/usboss-v0.2.0-android-debug.apk`
+- `release-assets/v0.2.0/usboss-client-v0.2.0-linux-x86_64.tar.gz`
+- `release-assets/v0.2.0/SHA256SUMS.txt`
+- `release-assets/v0.2.0/RELEASE_NOTES.md`
 
 If you pass `--notes-file`, the helper copies that file into the release bundle and uses it for the GitHub release body.
 
@@ -88,7 +88,7 @@ If you do not pass `--notes-file`, the helper generates a simple fallback notes 
 ### Publish immediately
 
 ```bash
-./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md --publish
+./scripts/release.sh v0.2.0 --notes-file docs/releases/v0.2.0.md --publish
 ```
 
 ### Reuse existing build artifacts
@@ -96,7 +96,7 @@ If you do not pass `--notes-file`, the helper generates a simple fallback notes 
 This is useful if you already built with Docker and only want to recreate the packaged assets or release:
 
 ```bash
-./scripts/release.sh v0.1.1 --skip-build --notes-file docs/releases/v0.1.1.md
+./scripts/release.sh v0.2.0 --skip-build --notes-file docs/releases/v0.2.0.md
 ```
 
 ### Use your own notes file
@@ -110,17 +110,17 @@ This is useful if you already built with Docker and only want to recreate the pa
 This is the safest dry run:
 
 ```bash
-./scripts/release.sh v0.1.1 --assets-only --notes-file docs/releases/v0.1.1.md
+./scripts/release.sh v0.2.0 --assets-only --notes-file docs/releases/v0.2.0.md
 ```
 
 That stops before any `git push`, tag push, or GitHub release creation.
 
-## Recommended workflow for v0.1.1
+## Recommended workflow for v0.2.0
 
 For your current state, I recommend:
 
 ```bash
-sudo ./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md
+sudo ./scripts/release.sh v0.2.0 --notes-file docs/releases/v0.2.0.md
 ```
 
 Then:
@@ -134,9 +134,9 @@ This keeps the automation high while still giving you a safe final review step.
 
 ## Notes about the APK
 
-For `v0.1.1`, the Android asset is intentionally packaged as a debug APK:
+For `v0.2.0`, the Android asset is intentionally packaged as a debug APK:
 
-- filename: `usboss-v0.1.1-android-debug.apk`
+- filename: `usboss-v0.2.0-android-debug.apk`
 - intended for sideloading and known-good testing
 
 That is still acceptable for the current release. A later release can switch to a proper signed release APK if you want a more polished Android distribution story.

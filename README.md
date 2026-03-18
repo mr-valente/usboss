@@ -30,7 +30,7 @@ Tested working with:
 - Prefers Xbox 360 style XInput when available
 - Also supports USB HID controllers
 - Supports long-running attach mode and `attach-all` for multi-controller setups
-- Rumble is not implemented yet on the Linux XInput path
+- Supports rumble on the tested Linux XInput path
 
 ## Build
 
@@ -141,8 +141,7 @@ adb logcat -s USBoss
 
 - Generic USB forwarding is out of scope
 - Xbox One / GIP devices are not implemented
-- The Linux XInput backend is input-only today
-- Rumble is not implemented yet
+- Rumble support is currently focused on the tested Xbox 360 style XInput flow
 - With multiple controllers already powered on during an Android reboot, the second controller may require one manual `Grant USB` action before it reconnects
 
 ## License

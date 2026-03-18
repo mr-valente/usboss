@@ -7,10 +7,10 @@ Usage:
   ./scripts/release.sh <version> [options]
 
 Examples:
-  ./scripts/release.sh v0.1.1 --notes-file docs/releases/v0.1.1.md
-  ./scripts/release.sh 0.1.1 --publish --notes-file /path/to/notes.md
-  ./scripts/release.sh v0.1.1 --skip-build --notes-file /path/to/notes.md
-  ./scripts/release.sh v0.1.1 --assets-only
+  ./scripts/release.sh v0.2.0 --notes-file docs/releases/v0.2.0.md
+  ./scripts/release.sh 0.2.0 --publish --notes-file /path/to/notes.md
+  ./scripts/release.sh v0.2.0 --skip-build --notes-file /path/to/notes.md
+  ./scripts/release.sh v0.2.0 --assets-only
 
 What it does:
   1. Builds USBoss with the Docker build helper unless --skip-build is passed
