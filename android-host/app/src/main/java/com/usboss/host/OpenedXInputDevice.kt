@@ -133,26 +133,14 @@ class OpenedXInputDevice(
         if (data.isEmpty()) {
             return 0
         }
-        val request = UsbRequest()
         return try {
-            if (!request.initialize(connection, endpoint)) {
-                return 5
-            }
-            val buffer = ByteBuffer.allocateDirect(data.size)
-            buffer.put(data)
-            buffer.flip()
-            if (!queueInterruptRequest(request, buffer)) {
-                return 5
-            }
-            val completed = connection.requestWait(250)
+            val written = connection.bulkTransfer(endpoint, data, data.size, 50)
             HostRuntime.debug(
-                "Sent XInput output report for ${candidate.systemPath}: type=$reportType id=$reportId size=${data.size} completed=${completed == request}",
+                "Sent XInput output report for ${candidate.systemPath}: type=$reportType id=$reportId size=${data.size} written=$written",
             )
-            if (completed == request) 0 else 5
+            if (written >= 0) 0 else 5
         } catch (_: Throwable) {
             5
-        } finally {
-            request.close()
         }
     }
 
