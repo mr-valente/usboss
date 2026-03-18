@@ -7,8 +7,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -139,7 +137,13 @@ class UsbBridgeServer(
 
         val input = BufferedInputStream(socket.getInputStream())
         val output = BufferedOutputStream(socket.getOutputStream())
-        val writerMutex = Mutex()
+        val writerLock = Any()
+
+        fun writeFrame(message: Protocol.Message) {
+            synchronized(writerLock) {
+                Protocol.write(output, message)
+            }
+        }
 
         val hello = Protocol.read(input)
         require(hello is Protocol.Message.Hello) { "Expected USBoss hello frame" }
@@ -148,9 +152,7 @@ class UsbBridgeServer(
         }
         HostRuntime.note("Session $sessionId hello from ${hello.clientName}")
         HostRuntime.debug("Session $sessionId completed handshake from ${hello.clientName}")
-        writerMutex.withLock {
-            Protocol.write(output, Protocol.Message.HelloAck(serverName()))
-        }
+        writeFrame(Protocol.Message.HelloAck(serverName()))
 
         var openedDevice: OpenedUsbDevice? = null
         var inputPump: Job? = null
@@ -169,12 +171,7 @@ class UsbBridgeServer(
                 when (val message = Protocol.read(input)) {
                     Protocol.Message.ListDevices -> {
                         HostRuntime.debug("Session $sessionId requested device list")
-                        writerMutex.withLock {
-                            Protocol.write(
-                                output,
-                                Protocol.Message.Devices(devicesProvider()),
-                            )
-                        }
+                        writeFrame(Protocol.Message.Devices(devicesProvider()))
                     }
 
                     is Protocol.Message.OpenDevice -> {
@@ -190,14 +187,7 @@ class UsbBridgeServer(
                             val errorMessage = error?.message ?: "Failed to open USB device"
                             onStatus("Open request failed; waiting for a usable USB device")
                             onError(errorMessage)
-                            writerMutex.withLock {
-                                Protocol.write(
-                                    output,
-                                    Protocol.Message.Error(
-                                        errorMessage,
-                                    ),
-                                )
-                            }
+                            writeFrame(Protocol.Message.Error(errorMessage))
                             continue@session
                         }
                         val device = deviceResult.getOrThrow()
@@ -205,18 +195,14 @@ class UsbBridgeServer(
                             device.close()
                             val errorMessage = "USB device is already being forwarded by another client"
                             HostRuntime.note("Session $sessionId could not reserve ${device.systemPath}: already in use")
-                            writerMutex.withLock {
-                                Protocol.write(output, Protocol.Message.Error(errorMessage))
-                            }
+                            writeFrame(Protocol.Message.Error(errorMessage))
                             continue@session
                         }
                         openedDevice = device
                         val spec = device.protocolSpec()
                         forwardedReportCount = 0
 
-                        writerMutex.withLock {
-                            Protocol.write(output, Protocol.Message.OpenDeviceAck(spec))
-                        }
+                        writeFrame(Protocol.Message.OpenDeviceAck(spec))
 
                         inputPump = ioScope.launch {
                             HostRuntime.debug("Session $sessionId started input pump for ${spec.name}")
@@ -230,14 +216,7 @@ class UsbBridgeServer(
                                                 "for ${device.systemPath} (${report.size} bytes)",
                                         )
                                     }
-                                    launch {
-                                        writerMutex.withLock {
-                                            Protocol.write(
-                                                output,
-                                                Protocol.Message.InputReport(report),
-                                            )
-                                        }
-                                    }
+                                    writeFrame(Protocol.Message.InputReport(report))
                                 },
                                 onError = { error ->
                                     onError(error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName)
@@ -253,9 +232,7 @@ class UsbBridgeServer(
 
                     is Protocol.Message.OutputReport -> {
                         if (openedDevice == null) {
-                            writerMutex.withLock {
-                                Protocol.write(output, Protocol.Message.Error("No USB device is currently open"))
-                            }
+                            writeFrame(Protocol.Message.Error("No USB device is currently open"))
                             continue@session
                         }
                         val device = checkNotNull(openedDevice)
@@ -277,16 +254,13 @@ class UsbBridgeServer(
                             "Session $sessionId received GET_REPORT request type=${message.reportType} id=${message.reportId} request=${message.requestId}",
                         )
                         if (openedDevice == null) {
-                            writerMutex.withLock {
-                                Protocol.write(
-                                    output,
-                                    Protocol.Message.GetReportResponse(
-                                        requestId = message.requestId,
-                                        status = 5,
-                                        data = ByteArray(0),
-                                    ),
-                                )
-                            }
+                            writeFrame(
+                                Protocol.Message.GetReportResponse(
+                                    requestId = message.requestId,
+                                    status = 5,
+                                    data = ByteArray(0),
+                                ),
+                            )
                             continue@session
                         }
                         val device = checkNotNull(openedDevice)
@@ -295,16 +269,13 @@ class UsbBridgeServer(
                         } catch (_: Throwable) {
                             ByteArray(0)
                         }
-                        writerMutex.withLock {
-                            Protocol.write(
-                                output,
-                                Protocol.Message.GetReportResponse(
-                                    requestId = message.requestId,
-                                    status = if (data.isEmpty()) 5 else 0,
-                                    data = data,
-                                ),
-                            )
-                        }
+                        writeFrame(
+                            Protocol.Message.GetReportResponse(
+                                requestId = message.requestId,
+                                status = if (data.isEmpty()) 5 else 0,
+                                data = data,
+                            ),
+                        )
                     }
 
                     is Protocol.Message.SetReportRequest -> {
@@ -312,15 +283,12 @@ class UsbBridgeServer(
                             "Session $sessionId received SET_REPORT request type=${message.reportType} id=${message.reportId} request=${message.requestId} size=${message.data.size}",
                         )
                         if (openedDevice == null) {
-                            writerMutex.withLock {
-                                Protocol.write(
-                                    output,
-                                    Protocol.Message.SetReportResponse(
-                                        requestId = message.requestId,
-                                        status = 5,
-                                    ),
-                                )
-                            }
+                            writeFrame(
+                                Protocol.Message.SetReportResponse(
+                                    requestId = message.requestId,
+                                    status = 5,
+                                ),
+                            )
                             continue@session
                         }
                         val device = checkNotNull(openedDevice)
@@ -329,21 +297,16 @@ class UsbBridgeServer(
                             reportId = message.reportId,
                             data = message.data,
                         )
-                        writerMutex.withLock {
-                            Protocol.write(
-                                output,
-                                Protocol.Message.SetReportResponse(
-                                    requestId = message.requestId,
-                                    status = status,
-                                ),
-                            )
-                        }
+                        writeFrame(
+                            Protocol.Message.SetReportResponse(
+                                requestId = message.requestId,
+                                status = status,
+                            ),
+                        )
                     }
 
                     Protocol.Message.Ping -> {
-                        writerMutex.withLock {
-                            Protocol.write(output, Protocol.Message.Pong)
-                        }
+                        writeFrame(Protocol.Message.Pong)
                     }
 
                     Protocol.Message.Pong -> Unit

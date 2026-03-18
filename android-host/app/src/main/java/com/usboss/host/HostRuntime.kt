@@ -93,7 +93,7 @@ object HostRuntime {
             it.copy(
                 serviceRunning = true,
                 status = listeningStatus(it.devices),
-                serverIp = findLocalIpv4Address().orEmpty(),
+                serverIp = it.serverIp,
             )
         }
         startRefreshLoop(appContext)
@@ -115,7 +115,7 @@ object HostRuntime {
         }
     }
 
-    fun refreshDevices(context: Context) {
+    fun refreshDevices(context: Context, refreshNetwork: Boolean = true) {
         ensureInitialized(context)
         runCatching {
             val devices = UsbDeviceCatalog.enumerate(context)
@@ -126,7 +126,11 @@ object HostRuntime {
                 lastAdvertisedPaths = availablePaths
                 server?.onAvailableDevicesChanged(availablePaths)
             }
-            val serverIp = findLocalIpv4Address().orEmpty()
+            val serverIp = if (refreshNetwork || state.value.serverIp.isBlank()) {
+                findLocalIpv4Address().orEmpty()
+            } else {
+                state.value.serverIp
+            }
             mutableState.update { current ->
                 current.copy(
                     devices = devices,
@@ -301,7 +305,7 @@ object HostRuntime {
                     break
                 }
                 runCatching {
-                    refreshDevices(context)
+                    refreshDevices(context, refreshNetwork = false)
                 }.onFailure { error ->
                     logError("Background USB refresh failed", error)
                 }

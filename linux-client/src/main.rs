@@ -22,7 +22,7 @@ use protocol::{
 use uhid::UhidDevice;
 use uinput::XInput360Device;
 
-const BUILD_FINGERPRINT: &str = "v0.1.1-socket-stop-recovery-2026-03-17";
+const BUILD_FINGERPRINT: &str = "v0.1.1-cleanup-pass-2026-03-18";
 
 fn main() {
     if let Err(error) = run() {
@@ -368,20 +368,18 @@ fn attach_session(
                 }
                 Err(error) => {
                     let message = format!("failed to open {selected}: {error}");
+                    eprintln!("USBoss: {message}");
+                    deferred_error = Some(message.clone());
                     if can_try_next_device(
                         &error.to_string(),
                         config.requested_device_id,
                         preferred_matcher.as_ref(),
                     ) {
-                        eprintln!("USBoss: {message}");
-                        deferred_error = Some(message);
                         continue;
                     }
                     if config.once {
                         return Err(AttachFailure::Retryable(message));
                     }
-                    eprintln!("USBoss: {message}");
-                    deferred_error = Some(message);
                     break;
                 }
             }
@@ -391,9 +389,6 @@ fn attach_session(
             return Err(AttachFailure::Retryable(
                 deferred_error.unwrap_or_else(|| "no controller could be opened".to_string()),
             ));
-        }
-        if let Some(message) = &deferred_error {
-            eprintln!("USBoss: {message}");
         }
         if sleep_interruptibly(config.rescan_delay, Some(config)) {
             return Ok(());
@@ -1289,7 +1284,7 @@ fn print_managed_workers(descriptors: &[ManagedWorkerDescriptor]) {
     }
 
     println!("Managed controllers:");
-    for descriptor in descriptors {
-        println!("  slot {} -> {}", descriptor.slot_index + 1, descriptor.label);
+    for (display_slot, descriptor) in descriptors.iter().enumerate() {
+        println!("  slot {} -> {}", display_slot + 1, descriptor.label);
     }
 }
