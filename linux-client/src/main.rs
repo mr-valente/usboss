@@ -21,7 +21,7 @@ use protocol::{
 use uhid::UhidDevice;
 use uinput::XInput360Device;
 
-const BUILD_FINGERPRINT: &str = "v0.1.1-resilience-pass-2026-03-17";
+const BUILD_FINGERPRINT: &str = "v0.1.1-xinput-hotpath-fix-2026-03-17";
 
 fn main() {
     if let Err(error) = run() {

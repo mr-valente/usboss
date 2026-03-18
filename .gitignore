@@ -6,3 +6,4 @@ release-assets/
 .docker-cache/
 *.iml
 .idea/
+Cargo.lock

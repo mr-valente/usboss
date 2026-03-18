@@ -4,7 +4,6 @@ import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbRequest
-import android.os.SystemClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -12,15 +11,11 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.IOException
 import java.nio.ByteBuffer
-import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val XINPUT_REPORT_LOG_LIMIT = 12
 private const val XINPUT_PLAYER_ONE_COMMAND = 0x02
-private const val XINPUT_REQUEST_WAIT_TIMEOUT_MS = 1_000L
-private const val XINPUT_RECOVERY_INTERVAL_MS = 2_000L
-private const val XINPUT_ZERO_LENGTH_REINIT_EVERY = 3
-private const val XINPUT_ZERO_LENGTH_RESET_THRESHOLD = 12
+private const val XINPUT_ZERO_LENGTH_REINIT_EVERY = 6
 
 class OpenedXInputDevice(
     private val candidate: UsbCandidate,
@@ -74,8 +69,6 @@ class OpenedXInputDevice(
         val buffer = ByteBuffer.allocate(packetSize)
         var reportCount = 0
         var zeroLengthCompletions = 0
-        var recoveryAttempts = 0
-        var lastRecoveryAt = 0L
 
         sendInitPacketIfNeeded(reason = "open")
 
@@ -86,20 +79,10 @@ class OpenedXInputDevice(
                     throw IOException("Failed to queue XInput interrupt read")
                 }
 
-                val completed = try {
-                    connection.requestWait(XINPUT_REQUEST_WAIT_TIMEOUT_MS)
-                } catch (_: TimeoutException) {
-                    runCatching { request.cancel() }
-                    if (zeroLengthCompletions > 0) {
-                        val now = SystemClock.elapsedRealtime()
-                        if (now - lastRecoveryAt >= XINPUT_RECOVERY_INTERVAL_MS) {
-                            recoveryAttempts += 1
-                            lastRecoveryAt = now
-                            sendInitPacketIfNeeded(reason = "zero-length-timeout-recovery-$recoveryAttempts")
-                        }
-                    }
-                    continue
-                } ?: continue
+                // v0.1.0's blocking wait path is the known-good behavior on real
+                // Shield + 8BitDo hardware. Keep the hot path simple here and do not
+                // treat idle gaps as transport failures.
+                val completed = connection.requestWait() ?: continue
                 if (completed != request) {
                     continue
                 }
@@ -114,14 +97,7 @@ class OpenedXInputDevice(
                         )
                     }
                     if (zeroLengthCompletions % XINPUT_ZERO_LENGTH_REINIT_EVERY == 0) {
-                        recoveryAttempts += 1
-                        lastRecoveryAt = SystemClock.elapsedRealtime()
-                        sendInitPacketIfNeeded(reason = "zero-length-recovery-$recoveryAttempts")
-                    }
-                    if (zeroLengthCompletions >= XINPUT_ZERO_LENGTH_RESET_THRESHOLD) {
-                        throw IOException(
-                            "XInput receiver stopped producing usable reports; resetting the session",
-                        )
+                        sendInitPacketIfNeeded(reason = "zero-length-recovery-$zeroLengthCompletions")
                     }
                     continue
                 }
@@ -131,7 +107,6 @@ class OpenedXInputDevice(
                 buffer.get(data)
                 reportCount += 1
                 zeroLengthCompletions = 0
-                recoveryAttempts = 0
                 if (shouldLogReport(reportCount)) {
                     HostRuntime.debug(
                         "XInput report #$reportCount for ${candidate.systemPath} (${data.size} bytes): ${data.hexSnippet()}",
