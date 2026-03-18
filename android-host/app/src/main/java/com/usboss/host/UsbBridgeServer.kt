@@ -221,8 +221,8 @@ class UsbBridgeServer(
                                                 "for ${device.systemPath} (${report.size} bytes)",
                                         )
                                     }
-                                    HostRuntime.noteInputActivity(device.systemPath)
                                     writeFrame(Protocol.Message.InputReport(report))
+                                    HostRuntime.noteInputActivity(device.systemPath)
                                 },
                                 onError = { error ->
                                     if (!stopping) {
