@@ -453,7 +453,9 @@ fn attach_hid_loop(
         match read_message(&mut reader_stream) {
             Ok(Message::InputReport { data }) => {
                 if let Err(error) = device.send_input(&data) {
-                    break AttachFailure::Fatal(format!("failed to inject HID input into UHID: {error}"));
+                    break Err(AttachFailure::Fatal(format!(
+                        "failed to inject HID input into UHID: {error}"
+                    )));
                 }
             }
             Ok(Message::GetReportResponse {
@@ -468,7 +470,9 @@ fn attach_hid_loop(
                     data.len()
                 ));
                 if let Err(error) = device.reply_get_report(request_id, status, &data) {
-                    break AttachFailure::Fatal(format!("failed to reply to UHID GET_REPORT: {error}"));
+                    break Err(AttachFailure::Fatal(format!(
+                        "failed to reply to UHID GET_REPORT: {error}"
+                    )));
                 }
             }
             Ok(Message::SetReportResponse { request_id, status }) => {
@@ -477,25 +481,29 @@ fn attach_hid_loop(
                     request_id, status
                 ));
                 if let Err(error) = device.reply_set_report(request_id, status) {
-                    break AttachFailure::Fatal(format!("failed to reply to UHID SET_REPORT: {error}"));
+                    break Err(AttachFailure::Fatal(format!(
+                        "failed to reply to UHID SET_REPORT: {error}"
+                    )));
                 }
             }
             Ok(Message::Ping) => {
                 let mut stream = match lock_writer(&writer) {
                     Ok(stream) => stream,
                     Err(error) => {
-                        break AttachFailure::Retryable(format!(
+                        break Err(AttachFailure::Retryable(format!(
                             "socket writer became unavailable: {error}"
-                        ));
+                        )));
                     }
                 };
                 if let Err(error) = write_message(&mut *stream, &Message::Pong) {
-                    break AttachFailure::Retryable(format!("failed to respond to host ping: {error}"));
+                    break Err(AttachFailure::Retryable(format!(
+                        "failed to respond to host ping: {error}"
+                    )));
                 }
             }
             Ok(Message::Pong) => {}
             Ok(Message::Error { message }) => {
-                break AttachFailure::Retryable(message);
+                break Err(AttachFailure::Retryable(message));
             }
             Ok(other) => {
                 eprintln!("USBoss: ignoring unexpected message during attach: {other:?}");
@@ -504,7 +512,7 @@ fn attach_hid_loop(
                 if is_retry_timeout(&error) && stop_requested_flag(stop_flag) {
                     break Ok(());
                 }
-                break AttachFailure::Retryable(format!("session ended: {error}"));
+                break Err(AttachFailure::Retryable(format!("session ended: {error}")));
             }
         }
     };
@@ -1219,7 +1227,7 @@ fn ensure_managed_worker(
 fn reap_finished_workers(workers: &mut HashMap<String, ManagedAttachWorker>, desired_keys: &HashSet<String>) {
     let obsolete_keys: Vec<String> = workers
         .iter()
-        .filter_map(|(key, worker)| {
+        .filter_map(|(key, _worker)| {
             if !desired_keys.contains(key) {
                 Some(key.clone())
             } else {
