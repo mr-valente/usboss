@@ -339,35 +339,6 @@ private fun ControlDeck(
                         modifier = Modifier.fillMaxWidth(),
                         containerColor = UsbBossPalette.surfaceRaised,
                     )
-                    ActionButton(
-                        label = "Grant USB",
-                        onClick = onGrant,
-                        modifier = Modifier.fillMaxWidth(),
-                        containerColor = Color(0xFF342046),
-                    )
-                    ActionButton(
-                        label = "Controller Info",
-                        onClick = onShowControllerInfo,
-                        modifier = Modifier.fillMaxWidth(),
-                        containerColor = UsbBossPalette.surfaceRaised,
-                    )
-                }
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    ActionButton(
-                        label = "Connection Info",
-                        onClick = onShowConnectionInfo,
-                        modifier = Modifier.fillMaxWidth(),
-                        containerColor = UsbBossPalette.surfaceRaised,
-                    )
-                    ActionButton(
-                        label = "Show Logs",
-                        onClick = onShowLogs,
-                        modifier = Modifier.fillMaxWidth(),
-                        containerColor = UsbBossPalette.surfaceRaised,
-                    )
                     ToggleActionButton(
                         label = if (state.startOnBoot) "Boot: On" else "Boot: Off",
                         active = state.startOnBoot,
@@ -379,6 +350,35 @@ private fun ControlDeck(
                         active = state.verboseLogging,
                         modifier = Modifier.fillMaxWidth(),
                         onClick = onToggleVerbose,
+                    )
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    ActionButton(
+                        label = "Grant USB",
+                        onClick = onGrant,
+                        modifier = Modifier.fillMaxWidth(),
+                        containerColor = UsbBossPalette.surfaceRaised,
+                    )
+                    ActionButton(
+                        label = "Controller Info",
+                        onClick = onShowControllerInfo,
+                        modifier = Modifier.fillMaxWidth(),
+                        containerColor = UsbBossPalette.surfaceRaised,
+                    )
+                    ActionButton(
+                        label = "Connection Info",
+                        onClick = onShowConnectionInfo,
+                        modifier = Modifier.fillMaxWidth(),
+                        containerColor = UsbBossPalette.surfaceRaised,
+                    )
+                    ActionButton(
+                        label = "Show Logs",
+                        onClick = onShowLogs,
+                        modifier = Modifier.fillMaxWidth(),
+                        containerColor = UsbBossPalette.surfaceRaised,
                     )
                 }
             }
