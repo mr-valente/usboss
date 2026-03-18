@@ -1,9 +1,9 @@
 android-host/.gradle/
 android-host/app/build/
 linux-client/target/
+linux-client/Cargo.lock
 build-artifacts/
 release-assets/
 .docker-cache/
 *.iml
 .idea/
-Cargo.lock
