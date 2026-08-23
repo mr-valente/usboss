@@ -12,8 +12,8 @@ The Docker setup does three things:
 
 By default, the container builds:
 
-- the Linux client binary from [linux-client](/Users/nick.valente/.dev/usboss/linux-client)
-- the Android debug APK from [android-host](/Users/nick.valente/.dev/usboss/android-host)
+- the Linux client binary from [linux-client](../linux-client)
+- the Android debug APK from [android-host](../android-host)
 
 The copied artifacts end up under:
 
@@ -34,9 +34,9 @@ Optional but useful:
 
 ## Files involved
 
-- [docker/Dockerfile](/Users/nick.valente/.dev/usboss/docker/Dockerfile): the build image
-- [docker/build-inside-container.sh](/Users/nick.valente/.dev/usboss/docker/build-inside-container.sh): runs inside the container and performs the actual build
-- [docker/run-build.sh](/Users/nick.valente/.dev/usboss/docker/run-build.sh): host-side helper that builds the image, mounts volumes, and runs the build
+- [docker/Dockerfile](../docker/Dockerfile): the build image
+- [docker/build-inside-container.sh](../docker/build-inside-container.sh): runs inside the container and performs the actual build
+- [docker/run-build.sh](../docker/run-build.sh): host-side helper that builds the image, mounts volumes, and runs the build
 
 ## Fast path
 

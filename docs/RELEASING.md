@@ -11,7 +11,7 @@ chmod +x scripts/release.sh
 
 By default, that script will:
 
-1. build both artifacts with [docker/run-build.sh](/Users/nick.valente/.dev/usboss/docker/run-build.sh)
+1. build both artifacts with [docker/run-build.sh](../docker/run-build.sh)
 2. package release assets into `release-assets/<version>/`
 3. generate default release notes
 4. create and push the git tag

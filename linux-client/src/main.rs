@@ -8,6 +8,7 @@ use std::env;
 use std::error::Error;
 use std::fmt;
 use std::io;
+use std::io::BufReader;
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -434,16 +435,19 @@ fn attach_hid_loop(
         }
     });
 
-    let mut reader_stream = stream;
+    let reader_stream = stream;
     reader_stream
         .set_nodelay(true)
         .map_err(|error| AttachFailure::Retryable(format!("failed to configure TCP stream: {error}")))?;
+    // Each frame is a header read plus a payload read; buffering halves the syscalls
+    // on the hot path without changing framing (this is the only reader).
+    let mut reader = BufReader::new(reader_stream);
 
     let outcome = loop {
         if stop_requested_control(stop_control) {
             break Ok(());
         }
-        match read_message(&mut reader_stream) {
+        match read_message(&mut reader) {
             Ok(Message::InputReport { data }) => {
                 if let Err(error) = device.send_input(&data) {
                     break Err(AttachFailure::Fatal(format!(
@@ -516,7 +520,7 @@ fn attach_hid_loop(
 }
 
 fn attach_xinput_loop(
-    mut stream: TcpStream,
+    stream: TcpStream,
     spec: OpenDeviceAck,
     stop_control: Option<&Arc<WorkerStopControl>>,
 ) -> Result<(), AttachFailure> {
@@ -550,12 +554,15 @@ fn attach_xinput_loop(
     stream
         .set_nodelay(true)
         .map_err(|error| AttachFailure::Retryable(format!("failed to configure TCP stream: {error}")))?;
+    // Each frame is a header read plus a payload read; buffering halves the syscalls
+    // on the hot path without changing framing (this is the only reader).
+    let mut reader = BufReader::new(stream);
 
     let outcome = loop {
         if stop_requested_control(stop_control) {
             break Ok(());
         }
-        match read_message(&mut stream) {
+        match read_message(&mut reader) {
             Ok(Message::InputReport { data }) => {
                 if let Err(error) = device.send_input_report(&data) {
                     break Err(AttachFailure::Fatal(format!(
