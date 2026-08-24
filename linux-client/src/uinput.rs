@@ -377,50 +377,46 @@ impl XInput360Device {
         }
         let state = parsed.state;
 
-        self.emit_key(BTN_START, state.start)?;
-        self.emit_key(BTN_SELECT, state.back)?;
-        self.emit_key(BTN_MODE, state.guide)?;
-        self.emit_key(BTN_THUMBL, state.thumb_l)?;
-        self.emit_key(BTN_THUMBR, state.thumb_r)?;
-        self.emit_key(BTN_TL, state.lb)?;
-        self.emit_key(BTN_TR, state.rb)?;
-        self.emit_key(BTN_A, state.a)?;
-        self.emit_key(BTN_B, state.b)?;
-        self.emit_key(BTN_X, state.x)?;
-        self.emit_key(BTN_Y, state.y)?;
-
-        self.emit_abs(ABS_HAT0X as u16, state.hat_x)?;
-        self.emit_abs(ABS_HAT0Y as u16, state.hat_y)?;
-        self.emit_abs(ABS_Z as u16, state.lt)?;
-        self.emit_abs(ABS_RZ as u16, state.rt)?;
-        self.emit_abs(ABS_X as u16, state.lx)?;
-        self.emit_abs(ABS_Y as u16, state.ly)?;
-        self.emit_abs(ABS_RX as u16, state.rx)?;
-        self.emit_abs(ABS_RY as u16, state.ry)?;
-        self.emit(EV_SYN, SYN_REPORT, 0)
+        // uinput accepts an array of input_events in a single write, and the kernel
+        // only publishes the frame once it reaches SYN_REPORT. Emitting these one at
+        // a time cost 20 syscalls per controller report for no benefit.
+        let events = [
+            input_event(EV_KEY, BTN_START, i32::from(state.start)),
+            input_event(EV_KEY, BTN_SELECT, i32::from(state.back)),
+            input_event(EV_KEY, BTN_MODE, i32::from(state.guide)),
+            input_event(EV_KEY, BTN_THUMBL, i32::from(state.thumb_l)),
+            input_event(EV_KEY, BTN_THUMBR, i32::from(state.thumb_r)),
+            input_event(EV_KEY, BTN_TL, i32::from(state.lb)),
+            input_event(EV_KEY, BTN_TR, i32::from(state.rb)),
+            input_event(EV_KEY, BTN_A, i32::from(state.a)),
+            input_event(EV_KEY, BTN_B, i32::from(state.b)),
+            input_event(EV_KEY, BTN_X, i32::from(state.x)),
+            input_event(EV_KEY, BTN_Y, i32::from(state.y)),
+            input_event(EV_ABS, ABS_HAT0X as u16, state.hat_x),
+            input_event(EV_ABS, ABS_HAT0Y as u16, state.hat_y),
+            input_event(EV_ABS, ABS_Z as u16, state.lt),
+            input_event(EV_ABS, ABS_RZ as u16, state.rt),
+            input_event(EV_ABS, ABS_X as u16, state.lx),
+            input_event(EV_ABS, ABS_Y as u16, state.ly),
+            input_event(EV_ABS, ABS_RX as u16, state.rx),
+            input_event(EV_ABS, ABS_RY as u16, state.ry),
+            input_event(EV_SYN, SYN_REPORT, 0),
+        ];
+        self.file.write_all(as_bytes_slice(&events))
     }
 
     pub fn destroy(&self) -> io::Result<()> {
         debug("Destroying virtual XInput device");
         ioctl_none(self.file.as_raw_fd(), UI_DEV_DESTROY)
     }
+}
 
-    fn emit_key(&mut self, code: u16, pressed: bool) -> io::Result<()> {
-        self.emit(EV_KEY, code, i32::from(pressed))
-    }
-
-    fn emit_abs(&mut self, code: u16, value: i32) -> io::Result<()> {
-        self.emit(EV_ABS, code, value)
-    }
-
-    fn emit(&mut self, event_type: u16, code: u16, value: i32) -> io::Result<()> {
-        let event = InputEvent {
-            time: timeval { tv_sec: 0, tv_usec: 0 },
-            type_: event_type,
-            code,
-            value,
-        };
-        self.file.write_all(as_bytes(&event))
+fn input_event(event_type: u16, code: u16, value: i32) -> InputEvent {
+    InputEvent {
+        time: timeval { tv_sec: 0, tv_usec: 0 },
+        type_: event_type,
+        code,
+        value,
     }
 }
 
@@ -744,6 +740,12 @@ fn write_padded_string(buffer: &mut [u8], value: &str) {
 
 fn as_bytes<T>(value: &T) -> &[u8] {
     unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
+}
+
+fn as_bytes_slice<T>(values: &[T]) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), size_of::<T>() * values.len())
+    }
 }
 
 fn as_bytes_mut<T>(value: &mut T) -> &mut [u8] {

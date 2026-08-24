@@ -1,24 +1,26 @@
 package com.usboss.host
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.EOFException
+import java.io.OutputStream
 import java.net.SocketException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.ConcurrentLinkedQueue
 
 class UsbBridgeServer(
     private val scope: CoroutineScope,
@@ -144,13 +146,38 @@ class UsbBridgeServer(
 
         val input = BufferedInputStream(socket.getInputStream())
         val output = BufferedOutputStream(socket.getOutputStream())
-        val writerMutex = Mutex()
+        val writer = SessionWriter(output)
 
-        suspend fun writeFrame(message: Protocol.Message) {
-            writerMutex.withLock {
-                Protocol.write(output, message)
+        // One coroutine owns the output stream for the whole session, so frames can
+        // never interleave or be reordered no matter who produces them.
+        val writerJob = ioScope.launch(Dispatchers.IO) {
+            try {
+                writer.run()
+            } catch (_: CancellationException) {
+                // Normal session teardown; the reader owns closing the socket.
+            } catch (error: Throwable) {
+                if (!shouldSuppressSessionError(error, socket)) {
+                    HostRuntime.debug("Session $sessionId writer ended: ${error.javaClass.simpleName}")
+                }
+                // The socket is unusable, so unblock the reader and let it tear down.
+                runCatching { socket.close() }
             }
         }
+
+        try {
+            runClientSession(sessionId, socket, input, writer)
+        } finally {
+            writerJob.cancel()
+        }
+    }
+
+    private suspend fun runClientSession(
+        sessionId: Long,
+        socket: Socket,
+        input: BufferedInputStream,
+        writer: SessionWriter,
+    ) {
+        fun writeFrame(message: Protocol.Message) = writer.sendControl(message)
 
         val hello = Protocol.read(input)
         require(hello is Protocol.Message.Hello) { "Expected USBoss hello frame" }
@@ -185,6 +212,8 @@ class UsbBridgeServer(
                         HostRuntime.note("Session $sessionId requested device ${message.deviceId}", addToRecent = true)
                         inputPump?.cancelAndJoin()
                         closeActiveDevice("open-device reset")
+                        // Anything still pending belongs to the device we just released.
+                        writer.discardPendingInputReports()
 
                         val deviceResult = runCatching {
                             openDevice(message.deviceId)
@@ -225,9 +254,10 @@ class UsbBridgeServer(
                                     }
                                     // Keep USB reads decoupled from socket flushes; synchronous
                                     // writes here add noticeable controller latency on Shield.
-                                    launch {
-                                        writeFrame(Protocol.Message.InputReport(report))
-                                    }
+                                    // This hands off without blocking and without queueing:
+                                    // see SessionWriter for why a stalled socket cannot build
+                                    // a backlog of stale controller state.
+                                    writer.sendInputReport(report)
                                 },
                                 onError = { error ->
                                     if (!stopping) {
@@ -333,6 +363,15 @@ class UsbBridgeServer(
             )
         } finally {
             HostRuntime.debug("Cleaning up session $sessionId")
+            val superseded = writer.supersededReportCount()
+            if (superseded > 0) {
+                // Should be zero on a healthy link, so make it visible without
+                // requiring verbose logging -- it is the signal that the socket
+                // was falling behind the controller.
+                HostRuntime.note(
+                    "Session $sessionId superseded $superseded stale input report(s) while the socket was behind",
+                )
+            }
             closeActiveDevice("session cleanup")
             inputPump?.cancel()
         }
@@ -546,6 +585,95 @@ class UsbBridgeServer(
 
     companion object {
         private const val TAG = "USBoss"
+    }
+
+    /**
+     * Owns one session's output stream.
+     *
+     * Control frames are queued losslessly and always drained ahead of input, so a
+     * reply can never overtake the `OPEN_DEVICE_ACK` or `HELLO_ACK` that preceded it.
+     *
+     * Input reports are different: each one is a complete state snapshot that
+     * supersedes the last, so they are held in a conflating slot keyed by report id
+     * rather than a queue. If the socket stalls -- a congested link, a Wi-Fi
+     * retransmit burst, the Shield descheduling us -- at most one report per id is
+     * ever pending, so the stall cannot build a backlog of stale controller state
+     * that has to be replayed afterwards. Before this, every USB report spawned its
+     * own coroutine and a stall of N milliseconds became N milliseconds of permanent
+     * added input latency that only a reconnect could clear.
+     *
+     * Keying on the first byte is safe for both transports: for HID reports that
+     * carry a report id it conflates exactly the reports that supersede each other,
+     * and for reports that do not it simply conflates less often.
+     */
+    private class SessionWriter(private val output: OutputStream) {
+        private val controlQueue = ConcurrentLinkedQueue<Protocol.Message>()
+        private val inputLock = Any()
+        private val pendingInputs = LinkedHashMap<Int, ByteArray>()
+        private val wakeup = Channel<Unit>(Channel.CONFLATED)
+
+        @Volatile
+        private var supersededReports = 0L
+
+        fun sendControl(message: Protocol.Message) {
+            controlQueue.add(message)
+            wakeup.trySend(Unit)
+        }
+
+        fun sendInputReport(report: ByteArray) {
+            synchronized(inputLock) {
+                val reportId = if (report.isEmpty()) -1 else report[0].toInt() and 0xff
+                if (pendingInputs.put(reportId, report) != null) {
+                    supersededReports += 1
+                }
+            }
+            wakeup.trySend(Unit)
+        }
+
+        fun discardPendingInputReports() {
+            synchronized(inputLock) {
+                pendingInputs.clear()
+            }
+        }
+
+        fun supersededReportCount(): Long = supersededReports
+
+        /**
+         * Drains and writes until cancelled. Blocking writes happen here and nowhere
+         * else, which is what keeps them off the USB read path.
+         */
+        suspend fun run() {
+            while (true) {
+                drain()
+                wakeup.receive()
+            }
+        }
+
+        private fun drain() {
+            while (true) {
+                val control = controlQueue.poll()
+                if (control != null) {
+                    Protocol.write(output, control)
+                    continue
+                }
+
+                val reports: List<ByteArray> = synchronized(inputLock) {
+                    if (pendingInputs.isEmpty()) {
+                        emptyList()
+                    } else {
+                        val snapshot = pendingInputs.values.toList()
+                        pendingInputs.clear()
+                        snapshot
+                    }
+                }
+                if (reports.isEmpty()) {
+                    return
+                }
+                reports.forEach { report ->
+                    Protocol.write(output, Protocol.Message.InputReport(report))
+                }
+            }
+        }
     }
 
     private data class ClientSession(
