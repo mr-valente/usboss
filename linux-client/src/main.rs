@@ -23,7 +23,43 @@ use protocol::{
 use uhid::UhidDevice;
 use uinput::{RumbleCommand, XInput360Device};
 
-const BUILD_FINGERPRINT: &str = "v0.1.1-rumble-stopfix-2026-03-18";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_DESCRIBE: &str = env!("USBOSS_GIT_DESCRIBE");
+const BUILD_DATE: &str = env!("USBOSS_BUILD_DATE");
+
+/// Short identity used in handshake logs and as the name reported to the host.
+fn client_tag() -> String {
+    format!("usboss-client {VERSION}")
+}
+
+/// Git revision plus build date, or `None` when the binary was built without
+/// git metadata available.
+fn build_stamp() -> Option<String> {
+    if GIT_DESCRIBE == "unknown" {
+        return None;
+    }
+    if BUILD_DATE == "unknown" {
+        Some(GIT_DESCRIBE.to_string())
+    } else {
+        Some(format!("{GIT_DESCRIBE} ({BUILD_DATE})"))
+    }
+}
+
+/// One-line version summary for logs, e.g. `0.2.1 [v0.2.1-1-g1ee8932 (2026-08-24)]`.
+fn version_summary() -> String {
+    match build_stamp() {
+        Some(stamp) => format!("{VERSION} [{stamp}]"),
+        None => VERSION.to_string(),
+    }
+}
+
+fn print_version() {
+    println!("{}", client_tag());
+    if let Some(stamp) = build_stamp() {
+        println!("build:    {stamp}");
+    }
+    println!("protocol: {}", protocol::PROTOCOL_VERSION);
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -38,21 +74,13 @@ fn run() -> Result<(), Box<dyn Error>> {
     set_verbose(verbose);
     if verbose {
         debug("Verbose logging enabled");
-        debug(&format!(
-            "Linux client build {} ({})",
-            env!("CARGO_PKG_VERSION"),
-            BUILD_FINGERPRINT
-        ));
+        debug(&format!("Linux client build {}", version_summary()));
     }
     let command = Command::parse(&args)?;
 
     match command {
         Command::Version => {
-            println!(
-                "usboss-client {} ({})",
-                env!("CARGO_PKG_VERSION"),
-                BUILD_FINGERPRINT
-            );
+            print_version();
         }
         Command::Discover { timeout_ms } => {
             let servers = discover_servers(Duration::from_millis(timeout_ms))?;
@@ -66,7 +94,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         Command::List { host } => {
             let mut stream = connect_target(resolve_target(host)?)?;
-            hello(&mut stream, "usboss-client/list")?;
+            hello(&mut stream, "list")?;
             let devices = list_devices(&mut stream)?;
             print_devices(&devices);
         }
@@ -85,7 +113,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 once,
                 preferred_matcher: None,
                 preferred_slot: 0,
-                client_name: "usboss-client/attach",
+                client_role: "attach",
                 stop_control: None,
             })?;
         }
@@ -102,7 +130,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 once: false,
                 preferred_matcher: None,
                 preferred_slot: 0,
-                client_name: "usboss-client/attach-all-worker",
+                client_role: "attach-all-worker",
                 stop_control: None,
             })?;
         }
@@ -111,30 +139,27 @@ fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn hello(stream: &mut TcpStream, client_name: &str) -> Result<(), Box<dyn Error>> {
-    hello_with_logging(stream, client_name, true)
+fn hello(stream: &mut TcpStream, client_role: &str) -> Result<(), Box<dyn Error>> {
+    hello_with_logging(stream, client_role, true)
 }
 
-fn hello_quiet(stream: &mut TcpStream, client_name: &str) -> Result<(), Box<dyn Error>> {
-    hello_with_logging(stream, client_name, false)
+fn hello_quiet(stream: &mut TcpStream, client_role: &str) -> Result<(), Box<dyn Error>> {
+    hello_with_logging(stream, client_role, false)
 }
 
 fn hello_with_logging(
     stream: &mut TcpStream,
-    client_name: &str,
+    client_role: &str,
     log_connection: bool,
 ) -> Result<(), Box<dyn Error>> {
-    write_message(
-        stream,
-        &Message::Hello {
-            client_name: client_name.to_string(),
-        },
-    )?;
+    // The host displays and logs this name, so carry the client version in it.
+    let client_name = format!("usboss-client/{VERSION} {client_role}");
+    write_message(stream, &Message::Hello { client_name })?;
     match read_message(stream)? {
         Message::HelloAck { server_name } => {
             debug(&format!("Handshake completed with {server_name}"));
             if log_connection {
-                println!("Connected to {server_name}");
+                println!("{} connected to {server_name}", client_tag());
             }
             Ok(())
         }
@@ -228,7 +253,7 @@ fn run_attach_all(base_config: AttachConfig) -> Result<(), Box<dyn Error>> {
                 continue;
             }
         };
-        if let Err(error) = hello_quiet(&mut stream, "usboss-client/attach-all-monitor") {
+        if let Err(error) = hello_quiet(&mut stream, "attach-all-monitor") {
             announce_retry(
                 &format!(
                     "attach-all inventory monitor handshake failed with {}:{}: {error}",
@@ -295,7 +320,7 @@ fn attach_session(
         AttachFailure::Retryable(format!("unable to connect to {}:{}: {error}", target.host, target.port))
     })?;
     bind_stop_stream(config.stop_control.as_ref(), &stream);
-    hello(&mut stream, config.client_name)
+    hello(&mut stream, config.client_role)
         .map_err(|error| classify_control_error("handshake failed", &*error))?;
 
     let mut last_snapshot: Option<String> = None;
@@ -885,7 +910,7 @@ fn extract_global_flags(args: Vec<String>) -> (bool, Vec<String>) {
 fn print_help() {
     println!(
         "\
-USBoss Linux client
+USBoss Linux client {version}
 
 Global flags:
   --verbose, -v    Enable extra connection, inventory, and protocol debugging
@@ -900,7 +925,8 @@ Commands:
 If --host is omitted, attach/list will try UDP broadcast discovery on the local subnet.
 Attach mode stays connected, reconnects automatically, and waits for controller devices to appear unless --once is passed.
 Attach-all supervises one or more controllers automatically and is the recommended mode for multiplayer setups.
-"
+",
+        version = version_summary()
     );
 }
 
@@ -913,7 +939,7 @@ struct AttachConfig {
     once: bool,
     preferred_matcher: Option<DeviceMatcher>,
     preferred_slot: usize,
-    client_name: &'static str,
+    client_role: &'static str,
     stop_control: Option<Arc<WorkerStopControl>>,
 }
 

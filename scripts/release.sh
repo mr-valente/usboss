@@ -13,11 +13,12 @@ Examples:
   ./scripts/release.sh v0.2.0 --assets-only
 
 What it does:
-  1. Builds USBoss with the Docker build helper unless --skip-build is passed
-  2. Packages the known-good artifacts into release-assets/<version>/
-  3. Generates default release notes unless --notes-file is provided
-  4. Creates/pushes an annotated git tag
-  5. Creates a GitHub release with downloadable assets through gh
+  1. Checks that the declared client/host versions match the release version
+  2. Builds USBoss with the Docker build helper unless --skip-build is passed
+  3. Packages the known-good artifacts into release-assets/<version>/
+  4. Generates default release notes unless --notes-file is provided
+  5. Creates/pushes an annotated git tag
+  6. Creates a GitHub release with downloadable assets through gh
 
 Default behavior:
   - creates a draft GitHub release
@@ -30,6 +31,7 @@ Options:
   --notes-file     Use an existing markdown file for release notes
   --assets-only    Stop after packaging assets and writing notes/checksums
   --allow-dirty    Skip the clean-working-tree check
+  --skip-version-check  Release even if the declared versions do not match <version>
   -h, --help       Show this help text
 EOF
 }
@@ -84,6 +86,38 @@ normalize_version() {
   fi
 }
 
+declared_client_version() {
+  grep -m1 -oP '^version = "\K[^"]+' "$1/linux-client/Cargo.toml"
+}
+
+declared_host_version() {
+  grep -m1 -oP 'versionName = "\K[^"]+' "$1/android-host/app/build.gradle.kts"
+}
+
+# The binaries stamp themselves from these files, so a mismatch here means the
+# release would ship artifacts that report the wrong version.
+check_declared_versions() {
+  local root_dir="$1"
+  local version="$2"
+  local expected="${version#v}"
+  local client_version
+  local host_version
+
+  client_version="$(declared_client_version "$root_dir")" ||
+    die "could not read the version from linux-client/Cargo.toml"
+  host_version="$(declared_host_version "$root_dir")" ||
+    die "could not read versionName from android-host/app/build.gradle.kts"
+
+  if [[ "$client_version" != "$expected" || "$host_version" != "$expected" ]]; then
+    die "version mismatch for $version:
+  linux client (Cargo.toml):        $client_version
+  android host (build.gradle.kts):  $host_version
+Run ./scripts/set-version.sh $version and commit the result, or rerun with --skip-version-check."
+  fi
+
+  echo "==> Declared versions match $version (client $client_version, host $host_version)"
+}
+
 git_clean() {
   run_as_release_user git diff --quiet &&
     run_as_release_user git diff --cached --quiet &&
@@ -103,6 +137,7 @@ main() {
   local skip_build=0
   local assets_only=0
   local allow_dirty=0
+  local skip_version_check=0
   local notes_file=""
 
   while [[ $# -gt 0 ]]; do
@@ -118,6 +153,9 @@ main() {
         ;;
       --allow-dirty)
         allow_dirty=1
+        ;;
+      --skip-version-check)
+        skip_version_check=1
         ;;
       --notes-file)
         shift
@@ -163,6 +201,12 @@ main() {
   branch="$(run_as_release_user git rev-parse --abbrev-ref HEAD)"
   if [[ "$assets_only" -eq 0 && "$branch" == "HEAD" ]]; then
     die "detached HEAD detected. Check out the release branch/commit normally before creating a release."
+  fi
+
+  if [[ "$skip_version_check" -eq 0 ]]; then
+    check_declared_versions "$root_dir" "$version"
+  else
+    echo "==> Skipping declared version check"
   fi
 
   if [[ "$skip_build" -eq 0 ]]; then

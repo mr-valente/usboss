@@ -2,6 +2,27 @@
 
 This guide assumes you are running on the Linux machine that already builds `USBoss` successfully with Docker.
 
+## Bump the version first
+
+The Linux client and the Android host each stamp themselves from a declared
+version, so those have to be updated and committed before releasing:
+
+```bash
+chmod +x scripts/set-version.sh
+./scripts/set-version.sh v0.2.2
+git commit -am "Bump version to 0.2.2"
+```
+
+That updates `linux-client/Cargo.toml`, `linux-client/Cargo.lock`, and the
+`versionName` / `versionCode` in `android-host/app/build.gradle.kts`. The
+Android `versionCode` is incremented by one unless you pass `--version-code N`.
+
+`scripts/release.sh` verifies these match the release tag and stops if they do
+not, which is what keeps shipped binaries from reporting a stale version. Use
+`--skip-version-check` only if you knowingly want a mismatch.
+
+## Release helper
+
 The easiest path is the release helper script:
 
 ```bash
@@ -11,11 +32,12 @@ chmod +x scripts/release.sh
 
 By default, that script will:
 
-1. build both artifacts with [docker/run-build.sh](../docker/run-build.sh)
-2. package release assets into `release-assets/<version>/`
-3. generate default release notes
-4. create and push the git tag
-5. create a **draft** GitHub release with downloadable assets
+1. check the declared versions against the release tag
+2. build both artifacts with [docker/run-build.sh](../docker/run-build.sh)
+3. package release assets into `release-assets/<version>/`
+4. generate default release notes
+5. create and push the git tag
+6. create a **draft** GitHub release with downloadable assets
 
 That default is intentional. A draft release gives you one last chance to inspect the notes and assets before publishing.
 
@@ -41,6 +63,18 @@ Important:
 - make sure you already ran `gh auth login` as your normal user before using `sudo`
 - the script expects `sudo` to preserve `SUDO_USER`, which is the normal behavior
 - if possible, adding your user to the `docker` group is still the cleaner long-term setup
+
+## Verifying a build
+
+After building, confirm the artifacts report the version you expect:
+
+```bash
+./build-artifacts/linux/usboss-client version
+aapt dump badging build-artifacts/android/app-debug.apk | grep versionName
+```
+
+The git build stamp in the client output (and under `Connection Info` in the
+app) identifies the exact commit each artifact came from.
 
 ## Prerequisites
 

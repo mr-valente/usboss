@@ -32,6 +32,32 @@ Tested working with:
 - Supports long-running attach mode and `attach-all` for multi-controller setups
 - Supports rumble on the tested Linux XInput path
 
+## Versions
+
+Both halves report the build they are running:
+
+- Linux: `usboss-client version` prints the client version, the git build stamp, and the protocol version
+- Android: the version sits next to the title on the host screen, with the full build stamp under `Connection Info`
+
+The two sides also report each other. `usboss-client discover` and the client's
+connect line show the host version, and the Android session line shows the
+version of the attached Linux client:
+
+```
+$ usboss-client version
+usboss-client 0.2.1
+build:    v0.2.1-1-g1ee8932 (2026-08-24)
+protocol: 2
+
+$ usboss-client discover
+192.168.1.161:35355 USBoss 0.2.1 on SHIELD Android TV
+```
+
+Version numbers live in `linux-client/Cargo.toml` and
+`android-host/app/build.gradle.kts`. Change both at once with
+`./scripts/set-version.sh <version>`; `scripts/release.sh` refuses to build a
+release whose declared versions do not match the tag.
+
 ## Build
 
 Docker is the recommended build path.

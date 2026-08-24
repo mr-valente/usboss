@@ -415,7 +415,9 @@ class UsbBridgeServer(
 
     private fun serverName(): String {
         val model = android.os.Build.MODEL ?: "Android Host"
-        return "USBoss on $model"
+        // Carries the host version into discovery listings and the Linux
+        // client's "connected to" line.
+        return "USBoss ${AppVersion.name} on $model"
     }
 
     private fun registerSession(socket: Socket): Long {
@@ -557,10 +559,18 @@ class UsbBridgeServer(
         val labels = sessions.map { it.clientLabel }.distinct()
         return when {
             sessions.isEmpty() -> "$prefix nobody"
-            labels.size == 1 && sessions.size == 1 -> "$prefix ${labels.first()}"
+            labels.size == 1 && sessions.size == 1 ->
+                "$prefix ${labels.first()}${clientVersionSuffix(sessions.first())}"
             labels.size == 1 -> "$prefix ${labels.first()} (${sessions.size} sessions)"
             else -> "$prefix ${labels.size} clients (${sessions.size} sessions)"
         }
+    }
+
+    // Hello names arrive as "usboss-client/<version> <role>". Older clients send
+    // no version, so anything that does not look like one is left out.
+    private fun clientVersionSuffix(session: ClientSession): String {
+        val version = CLIENT_VERSION_PATTERN.find(session.clientName)?.groupValues?.get(1)
+        return if (version == null) "" else " (client $version)"
     }
 
     private fun snapshotSessions(): List<ClientSession> {
@@ -585,6 +595,7 @@ class UsbBridgeServer(
 
     companion object {
         private const val TAG = "USBoss"
+        private val CLIENT_VERSION_PATTERN = Regex("""^usboss-client/(\d+\.\d+\.\d+\S*)""")
     }
 
     /**

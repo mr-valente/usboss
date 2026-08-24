@@ -3,6 +3,24 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Stamps the APK with the git revision it was built from so the app can show
+// something more precise than versionName alone. Builds without git available
+// (source drops, restricted CI) fall back to "unknown".
+fun gitValue(repoDir: java.io.File, vararg args: String): String = try {
+    val process = ProcessBuilder(*args)
+        .directory(repoDir)
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+    if (process.waitFor() == 0 && output.isNotBlank()) output else "unknown"
+} catch (ignored: Exception) {
+    // No git, no repository, or no permission to run it: fall back quietly.
+    "unknown"
+}
+
+val gitDescribe: String = gitValue(rootDir, "git", "describe", "--tags", "--always", "--dirty")
+val buildDate: String = gitValue(rootDir, "git", "log", "-1", "--date=format:%Y-%m-%d", "--format=%cd")
+
 android {
     namespace = "com.usboss.host"
     compileSdk = 35
@@ -11,8 +29,11 @@ android {
         applicationId = "com.usboss.host"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 4
+        versionName = "0.2.1"
+
+        buildConfigField("String", "GIT_DESCRIBE", "\"$gitDescribe\"")
+        buildConfigField("String", "BUILD_DATE", "\"$buildDate\"")
     }
 
     buildTypes {
@@ -36,6 +57,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {

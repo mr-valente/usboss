@@ -245,12 +245,18 @@ private fun HeroCard(state: HostUiState) {
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Text(
-                            text = "USBoss",
-                            color = UsbBossPalette.textPrimary,
-                            style = MaterialTheme.typography.displaySmall,
-                            fontWeight = FontWeight.Black,
-                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "USBoss",
+                                color = UsbBossPalette.textPrimary,
+                                style = MaterialTheme.typography.displaySmall,
+                                fontWeight = FontWeight.Black,
+                            )
+                            VersionBadge()
+                        }
                         Text(
                             text = "USB controller bridge for Android and Linux",
                             color = UsbBossPalette.textSecondary,
@@ -534,6 +540,25 @@ private fun StatusBadge(state: HostUiState) {
 }
 
 @Composable
+private fun VersionBadge() {
+    Box(
+        modifier = Modifier
+            .background(
+                color = UsbBossPalette.orchid.copy(alpha = 0.20f),
+                shape = RoundedCornerShape(999.dp),
+            )
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    ) {
+        Text(
+            text = AppVersion.label,
+            color = UsbBossPalette.pink,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+@Composable
 private fun StatChip(label: String, accent: Color) {
     Box(
         modifier = Modifier
@@ -660,6 +685,25 @@ private fun ConnectionInfoDialog(
                     )
                     Text(
                         text = "Linux session state: ${state.connectedClient ?: "none"}",
+                        color = UsbBossPalette.textSecondary,
+                    )
+                    Text(
+                        text = "Versions",
+                        color = UsbBossPalette.pink,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "Host app: ${AppVersion.name}",
+                        color = UsbBossPalette.textSecondary,
+                    )
+                    AppVersion.buildStamp?.let { stamp ->
+                        Text(
+                            text = "Host build: $stamp",
+                            color = UsbBossPalette.textSecondary,
+                        )
+                    }
+                    Text(
+                        text = "Protocol: ${Protocol.PROTOCOL_VERSION}",
                         color = UsbBossPalette.textSecondary,
                     )
                     Text(
