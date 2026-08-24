@@ -13,6 +13,7 @@ mkdir -p \
     "${ARTIFACT_ROOT}/android" \
     "${ARTIFACT_ROOT}/linux" \
     "${CACHE_ROOT}/gradle" \
+    "${CACHE_ROOT}/android" \
     "${CACHE_ROOT}/cargo/registry" \
     "${CACHE_ROOT}/cargo/git"
 
@@ -33,6 +34,10 @@ docker_args=(
     --volume "${ROOT_DIR}:/workspace"
     --volume "${ARTIFACT_ROOT}:/artifacts"
     --volume "${CACHE_ROOT}/gradle:/home/builder/.gradle"
+    # Persist the debug keystore so every build signs with the same key;
+    # otherwise each fresh container generates a new one and adb install
+    # fails with INSTALL_FAILED_UPDATE_INCOMPATIBLE.
+    --volume "${CACHE_ROOT}/android:/home/builder/.android"
     --volume "${CACHE_ROOT}/cargo/registry:/home/builder/.cargo/registry"
     --volume "${CACHE_ROOT}/cargo/git:/home/builder/.cargo/git"
     --env "ANDROID_GRADLE_TASK=${ANDROID_GRADLE_TASK:-:app:assembleDebug}"

@@ -71,6 +71,16 @@ Expected files:
 - `build-artifacts/android/app-debug.apk`
 - `build-artifacts/linux/usboss-client`
 
+## Debug signing key
+
+Debug APKs are signed with `.docker-cache/android/debug.keystore`, which is mounted
+into the container at `/home/builder/.android`. Keeping it out of the container image
+means every build signs with the same key, so `adb install` can update an existing
+install instead of failing with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`.
+
+If you delete `.docker-cache/android/`, the next build generates a fresh key and you
+will have to `adb uninstall com.usboss.host` once before installing again.
+
 ## Build only one target
 
 ### Linux only
