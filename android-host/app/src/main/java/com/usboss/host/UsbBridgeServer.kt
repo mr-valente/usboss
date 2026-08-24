@@ -365,7 +365,10 @@ class UsbBridgeServer(
             HostRuntime.debug("Cleaning up session $sessionId")
             val superseded = writer.supersededReportCount()
             if (superseded > 0) {
-                HostRuntime.debug(
+                // Should be zero on a healthy link, so make it visible without
+                // requiring verbose logging -- it is the signal that the socket
+                // was falling behind the controller.
+                HostRuntime.note(
                     "Session $sessionId superseded $superseded stale input report(s) while the socket was behind",
                 )
             }
